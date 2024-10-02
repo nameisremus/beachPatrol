@@ -45,11 +45,24 @@ async def remove(ctx, twitter_url: str):
 
 
 @bot.slash_command()
-async def process(ctx, space_url: str):
-    await ctx.respond(f"Processing space URL {space_url}... I'll notify you when it's done.")
-    job = celery_app.send_task('worker.scrape_space', args=[space_url])
+async def process(ctx, url: str):
+    # Detect Twitter Space URL
+    if "twitter.com/i/spaces" in url or "x.com/i/spaces" in url:
+        await ctx.respond(f"Processing Twitter Space URL {url} ... I'll notify you when it's done.")
+        job = celery_app.send_task('worker.scrape_space', args=[url])
 
+    # Detect YouTube URL
+    elif "youtube.com/watch" in url or "youtu.be" in url:
+        await ctx.respond(f"Processing YouTube URL {url} ... I'll notify you when it's done.")
+        job = celery_app.send_task('worker.scrape_youtube_video', args=[url])
+
+    # Detect Article/Blog URL (assuming non-Twitter/YouTube URLs)
+    else:
+        await ctx.respond(f"Processing article URL {url} ... I'll notify you when it's done.")
+        job = celery_app.send_task('worker.scrape_article', args=[url])
+    
     tasks_list.append((job, ctx))
+
 
 
 @tasks.loop(seconds=5)  # adjust the interval as needed

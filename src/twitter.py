@@ -169,7 +169,7 @@ def summarize_transcript(transcript):
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=40000, chunk_overlap=500, length_function=len, is_separator_regex=False)
         docs = text_splitter.split_documents([doc])
-        llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo-16k")
+        llm = ChatOpenAI(temperature=0, model_name=os.getenv("OPENAI_MODEL"))
         chain = load_summarize_chain(llm, chain_type="refine",
                                      question_prompt=summary_prompt,
                                      refine_prompt=refine_summary_prompt,
@@ -218,7 +218,7 @@ def get_executive_summary(summary):
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=40000, chunk_overlap=500, length_function=len, is_separator_regex=False)
         docs = text_splitter.split_documents([doc])
-        llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo-16k")
+        llm = ChatOpenAI(temperature=0, model_name=os.getenv("OPENAI_MODEL"))
         chain = load_summarize_chain(llm, chain_type="refine",
                                      question_prompt=executive_prompt,
                                      refine_prompt=refine_executive_prompt,
