@@ -1,11 +1,10 @@
 from celery import shared_task
-from twitter import get_twitter_space_if_live
 import redis
-from celery_config import app as celery_app
-import time
+from config import REDIS_HOST, REDIS_PORT
+from tasks.celery_config import app as celery_app
+from extractors.twitter_extractor import get_twitter_space_if_live
 
-r = redis.Redis(host='localhost', port=6380)
-
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
 
 @shared_task
 def check_if_live():
@@ -14,12 +13,11 @@ def check_if_live():
     for url in urls_to_check:
         url_str = url.decode('utf-8')
         tw_space = get_twitter_space_if_live(url_str, "../cookies.txt")
-        if (tw_space is not None):
+        if tw_space is not None:
             print(f"Space {url_str} is live!")
             print(tw_space["url"])
-            if (r.get(f"scraping:{url_str}") == "True"):
+            if r.get(f"scraping:{url_str}") == b"True":
                 print(f"Already scraping {url_str}, skipping...")
                 continue
             r.set(f"scraping:{url_str}", "True")
-            celery_app.send_task('worker.scrape_space', args=[
-                                 tw_space["url"], True])
+            celery_app.send_task('worker.scrape_space', args=[tw_space["url"], True])
