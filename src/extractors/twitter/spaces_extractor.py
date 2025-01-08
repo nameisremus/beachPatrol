@@ -7,9 +7,6 @@ from twspace_dl.cookies import load_cookies
 from twspace_dl.twspace import Twspace
 from twspace_dl.twspace_dl import TwspaceDL
 from core.core import summarize_transcript, get_executive_summary
-from langchain.schema import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chat_models import ChatOpenAI
 
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -67,7 +64,7 @@ def chunk_file_if_needed(file_path, max_size_mb=10):
 
         return [os.path.join(segments_dir, f) for f in os.listdir(segments_dir) if f.startswith("segment")]
 
-def transcribe_segments(segments, prompt):
+def transcribe_segments(segments):
     transcript = ""
     for segment in segments:
         with open(segment, "rb") as audio_file:
@@ -78,7 +75,7 @@ def transcribe_segments(segments, prompt):
 def process_twitter_space(space_url, cookies_path):
     transcript_location = download_twitter_space_direct(space_url, cookies_path)
     chunks = chunk_file_if_needed(transcript_location)
-    transcript = transcribe_segments(chunks, "Twitter Space about Crypto, Web3, Liquid Staking, and Lido Finance")
+    transcript = transcribe_segments(chunks)
     summary = summarize_transcript(transcript, media_type="twitter_space")
     executive_summary = get_executive_summary(summary, media_type="twitter_space")
     return {'space_url': space_url, 'exec_sum': executive_summary, 'notes': summary}

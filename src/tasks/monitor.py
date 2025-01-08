@@ -2,7 +2,7 @@ from celery import shared_task
 import redis
 from config import REDIS_HOST, REDIS_PORT
 from tasks.celery_config import app as celery_app
-from extractors.twitter_extractor import get_twitter_space_if_live
+from extractors.twitter.spaces_extractor import get_twitter_space_if_live
 
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
 

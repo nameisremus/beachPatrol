@@ -12,14 +12,33 @@ def chunk_text(text: str, limit: int = 3846, suffix: str = "... (cont. on next p
     """
     Character-based chunking approach preserving newlines and formatting.
     Slices off up to (limit - len(suffix)) for each chunk if text is longer,
-    appending 'suffix' to indicate there's more to read.
+    appending 'suffix' to indicate there's more to read.    
     """
     chunks = []
-    while len(text) > limit - len(suffix):
-        cutoff = limit - len(suffix)
-        chunk = text[:cutoff] + suffix
-        chunks.append(chunk)
-        text = text[cutoff:]
+    suffix_len = len(suffix)
+    # We'll operate until text length is within limit
+    while len(text) > limit:
+        cutoff = limit - suffix_len
+        if cutoff < 0:
+            # Edge case: if suffix nearly equals or exceeds limit
+            cutoff = limit
+
+        # Attempt to find the last space in text[:cutoff]
+        slice_ = text[:cutoff]
+        last_space_idx = slice_.rfind(" ")
+
+        if last_space_idx == -1:
+            # No space found, forced break at cutoff
+            chunk = text[:cutoff] + suffix
+            chunks.append(chunk)
+            text = text[cutoff:]
+        else:
+            # Break at last space
+            chunk = text[:last_space_idx] + suffix
+            chunks.append(chunk)
+            # Strip leading spaces in the leftover
+            text = text[last_space_idx:].lstrip()
+
     if text:
         chunks.append(text)
     return chunks

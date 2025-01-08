@@ -9,3 +9,7 @@ dump.rdb
 /src/__pycache__
 /src/extractors/__pycache__
 /src/tasks/__pycache__
+/src/extractors/twitter/__pycache__
+src/tasks/session.tw_session
+tweet_accounts.json
+tweet_categories.json

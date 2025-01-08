@@ -1,6 +1,6 @@
 # beachPatrol
 
-🏖️🚓**beachPatrol** is a project by [LidoDAO contributors](https://www.lido.fi) with the purpose of amplifying the eyes and ears of the Lido DAO. It empowers contributors by providing pre-packaged AI meta-aggregation and parsing across articles, governance forums, Twitter Spaces and YouTube videos.
+🏖️🚓**beachPatrol** is a project by [LidoDAO contributors](https://www.lido.fi) with the purpose of amplifying the eyes and ears of the Lido DAO. It empowers contributors by providing pre-packaged AI meta-aggregation and parsing across articles, governance forums, Twitter profiles, Twitter Spaces and YouTube videos.
 
 **Beach Patrol’s purpose** is straightforward: it continuously monitors these sources, processes the data using AI-driven summarization, and posts timely updates in a Discord channel via a persistent, paginated interface.
 
@@ -9,6 +9,10 @@
 ## Features
 
 - **Governance Forum Summaries**. Ecosystem and Governance forum updates summarization, over 70 forums available
+
+- **Twitter Digest**. Generate a digest for a customizable list of Twitter accounts, with categorization by topics
+
+- **Twitter Account Summary**. Summarize tweets for a specific Twitter user over a given timeframe, with categorization and reference legend.
 
 - **On-Demand Media Summarization**. Request summaries for articles, Twitter Spaces, and YouTube videos via Discord commands
 
@@ -89,6 +93,11 @@ cp .env.sample .env
 ```
 Open the .env file in a text editor and fill in the necessary values, or replace the placeholders with your actual configuration values. Save and close the .env file.
 
+After setting up your .env, review the JSON sample files to add or update Twitter account sources and tweet categories as needed:
+
+	- tweet_accounts.sample.json: Use this sample to list additional Twitter accounts. Follow the provided format to add more sources.
+	- tweet_categories.sample.json: Use this sample to define additional tweet categories. Ensure the format remains consistent for proper loading.
+
 9. Start the Celery worker:
 Open a new terminal window and run:
 
@@ -121,8 +130,14 @@ Determines the media type of the provided URL (Twitter Space, YouTube video, or 
     - Articles/PDFs: Scrapes the text and generates summaries.
 
 The bot responds with both an executive summary and detailed notes, formatted in a paginated embed if necessary.
-- `/generate_gov_digest [timeframe=1d] [relevancy_filter=True]`
+- `/generate_gov_digest [timeframe=1d/2d/etc] [relevancy_filter=True/False]`
     - Manually triggers the governance forum scraper. It checks multiple governance forums, optionally filters out irrelevant topics, and posts summarized updates in Discord.
+
+- `/generate_twitter_digest [timeframe=1d/2d] [relevancy_filter=True/False]`
+    - Gathers tweets from configured Twitter accounts, categorizes them, and returns a digest which includes a legend linking to specific tweets.
+
+- `/generate_twitter_digest [timeframe=1d/2d] [relevancy_filter=True/False]`
+    - Summarizes all tweets for a specific Twitter user within the given timeframe. The summary includes categorization and a legend of analyzed tweets, fetching additional pages as needed to cover the entire timeframe.
 
 ### Background Tasks
 
@@ -131,8 +146,11 @@ In addition to responding to commands, the bot runs several background tasks:
 Monitors Celery tasks to check if any have completed. If a task is finished, it retrieves the result and posts the summary and notes to the appropriate Discord channel.
 - `check_watchlist_results` (every 60 seconds)
 Checks a Redis list named watchlist_results for new Twitter Spaces marked as live and sends their summaries to the Discord channel.
-- `daily_govdigest_scheduler` (every minute)
-Checks if it’s the scheduled time (e.g., 10:10 UTC) to automatically run the governance forum scraper with a specified timeframe and relevancy filter.
+- `daily_scheduled_tasks` (every minute)
+Combines daily scheduling for both governance and Twitter digests:
+	- At 10:00 UTC, automatically runs the governance forum scraper.
+	- At 07:00 UTC, automatically runs the Twitter digest.
+
 ----------
 
 ### Folder Structure
@@ -146,13 +164,16 @@ beachPatrol/
     ├── extractors/
     │   ├── article_extractor.py      # Article/PDFs logic
     │   ├── governance_extractor.py   # Governance forums logic
-    │   ├── twitter_extractor.py      # Twitter Spaces logic
+    │   ├── twitter/                  # Twitter-related logic
+    │   │   ├── spaces_extractor.py   # Twitter Spaces logic
+    │   │   ├── digest_extractor.py   # Multi-user Twitter digest logic
+    │   │   └── account_extractor.py  # Single-user Twitter account summary logic
     │   └── youtube_extractor.py      # YouTube audio logic
     ├── interface/
     │   └── discord_app.py          # Main Discord bot code (slash commands, task loops)
     ├── tasks/
     │   ├── celery_config.py        # Celery configuration
-    │   ├── monitor.py              # Periodic checks (currently for Twitter Spaces)
+    │   ├── monitor.py              # Periodic checks (e.g., for Twitter Spaces)
     │   └── worker.py               # Celery task definitions
     └── core/
         └── utils.py                # Utility functions and persistent views
@@ -166,7 +187,7 @@ beachPatrol/
 1. **Discord Bot**:
     - Utilizes the `discord.py` library to interact with the Discord API.
     - Listens for slash commands and enqueues tasks to Celery workers via Redis.
-    - Posts summaries back to Discord using paginated embeds with interactive buttons. This help with message limits in Discord, while also offerring a new UX for this use-case.
+    - Posts summaries back to Discord using paginated embeds with interactive buttons. This help with message limits in Discord, while also offerring a friendly UX for this use-case.
 
 2. **Celery Workers**:
     - Handle the heavy lifting of scraping, transcribing, and summarizing content.
@@ -178,9 +199,8 @@ beachPatrol/
     - When a summary is posted, its state is saved in Redis, including the message ID and channel ID.
     - On bot startup, existing summaries are reloaded from Redis, and views are reattached to the original Discord messages to maintain interactivity.
 
-
 4. **AI Summarization**:
-    - Leverages various OpenAI's models to generate executive summaries and detailed notes.
+    - Leverages various OpenAI models to generate executive summaries and detailed notes.
     - Differentiates between media types to apply appropriate summarization prompts and models.
 
 5. **Paginated Embeds**:

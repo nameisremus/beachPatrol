@@ -3,8 +3,8 @@ import html
 import re
 from datetime import datetime, timedelta, timezone
 
-from config import GOVERNANCE_FORUMS_MAPPING, OPENAI_MODEL  # <-- note updated import
-from core.core import summarize_transcript, get_executive_summary, check_topic_relevance
+from config import GOVERNANCE_FORUMS_MAPPING, OPENAI_MODEL
+from core.core import summarize_transcript, get_executive_summary, check_topic_relevance, categorize_governance_topic
 
 def remove_html_tags(text):
     return re.sub('<[^<]+?>', '', text)
@@ -67,8 +67,8 @@ def process_governance_forum(
        - For each topic, fetch the full post content
        - Combine title + excerpt + body
        - If relevancy filter is True, run check_topic_relevance
-       - Summarize if relevant or always if only_relevant=False
-    3) Produce combined notes & executive summary
+       - If relevant, categorize the topic, then summarize
+    3) Produce combined notes & executive summary grouped by category
     """
     print("Starting governance forum processing...")
 
@@ -78,9 +78,10 @@ def process_governance_forum(
     print(f"Timeframe={timeframe}, onlyRelevant={only_relevant}")
     print(f"Using timeframe cutoff of {timeframe_delta} -> {cutoff.isoformat()}")
 
+    # We'll accumulate all relevant topics here
     relevant_topics = []
 
-    # Instead of a list of URLs, we have a dict: {url: name, url2: name2, ...}
+    # Iterate each forum in the mapping
     for forum_url, forum_name in GOVERNANCE_FORUMS_MAPPING.items():
         print(f"Processing forum: {forum_url} ({forum_name})")
         topics = fetch_forum_topics(forum_url)
@@ -92,7 +93,7 @@ def process_governance_forum(
             if not created_at:
                 continue
 
-            # Convert to offset-aware datetime
+            # Convert 'created_at' to offset-aware datetime
             try:
                 naive_dt = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%fZ")
                 created_dt = naive_dt.replace(tzinfo=timezone.utc)
@@ -113,15 +114,18 @@ def process_governance_forum(
             processed_count += 1
             print(f"Checking topic '{title}' in {forum_name}")
 
-            # Fetch full text
+            # Fetch full text for summarization + category
             full_content = get_topic_details(forum_url, topic_id)
             entire_text_for_relevance = f"{title}\n\n{excerpt}\n\n{full_content}"
 
-            # If only_relevant is True, check topic relevance
+            # If only_relevant is True, check if relevant to Lido
             if only_relevant:
                 if not check_topic_relevance(entire_text_for_relevance):
                     print(f"Topic '{title}' in {forum_name} not relevant.")
                     continue
+
+            # Now we categorize the topic
+            category = categorize_governance_topic(entire_text_for_relevance)
 
             # Summaries
             summary = summarize_transcript(
@@ -136,34 +140,71 @@ def process_governance_forum(
             # Build direct link
             thread_link = f"{forum_url}/t/{topic_id}"
 
+            # Adjust headings
             summary = summary.replace("##", "###")
+            # Second pass: anything >= #### => ###
+            summary = re.sub(r'^(#{4,})(\s+)', r'###\2', summary, flags=re.MULTILINE)
+            # Discordify formatting
+            summary = re.sub(r'(?m)^###\s+(.*)', r'**\1**', summary, flags=re.MULTILINE)
 
             relevant_topics.append({
                 'forum_name': forum_name,
                 'thread_link': thread_link,
                 'title': title,
                 'summary': summary,
-                'exec_summary': exec_summary
+                'exec_summary': exec_summary,
+                'category': category
             })
 
         print(f"Finished processing {forum_name}: Processed={processed_count}, Included={relevant_count}.")
 
-    # Build final outputs
+    # Group final results
     if not relevant_topics:
         combined_notes = "No new relevant governance topics found in the given timeframe."
         combined_exec = "No updates."
     else:
-        combined_notes = f"## Ecosystem and Governance Updates (Last {timeframe}), model={OPENAI_MODEL}\n\n"
-        combined_exec = f"**Ecosystem and Governance Updates past {timeframe}\n\n**"
+        # Known categories, in desired order
+        CATEGORY_ORDER = [
+            "Lido Related Updates 💧",
+            "Competitor Updates 🥊",
+            "Lending Markets 🏦",
+            "Layer2s 🔗",
+            "DEXes 💱",
+            "Grants and Funding 💸",
+            "Misc. 🌀"
+        ]
+        # Build a dict category -> list of topics
+        grouped = {cat: [] for cat in CATEGORY_ORDER}
 
-        for i, rt in enumerate(relevant_topics, start=1):
-            # Show the forum name near the topic title
-            combined_notes += (
-                f"{i}.) [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>)\n   {rt['summary']}\n\n"
-            )
-            combined_exec += (
-                f"{i}. [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>) - {rt['exec_summary']}\n\n"
-            )
+        # Sort each topic into the correct bucket
+        for rt in relevant_topics:
+            cat = rt["category"]
+            # If GPT returned something unexpected, default to Misc.
+            if cat not in grouped:
+                cat = "Misc. 🌀"
+            grouped[cat].append(rt)
+
+        # Build final combined notes & exec
+        combined_notes = f"## Ecosystem and Governance Updates (Last {timeframe}), model={OPENAI_MODEL}\n\n"
+        combined_exec = f"**Ecosystem and Governance Updates past {timeframe}**\n\n"
+
+        for cat in CATEGORY_ORDER:
+            cat_items = grouped[cat]
+            if not cat_items:
+                continue  # skip empty category
+
+            # Add category heading
+            combined_notes += f"### {cat}\n\n"
+            combined_exec += f"### {cat}\n\n"
+
+            for i, rt in enumerate(cat_items, start=1):
+                combined_notes += (
+                    f"{i}.) [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>)\n"
+                    f"   {rt['summary']}\n\n"
+                )
+                combined_exec += (
+                    f"{i}. [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>) - {rt['exec_summary']}\n\n"
+                )
 
     print("Governance forum processing completed.")
     return {

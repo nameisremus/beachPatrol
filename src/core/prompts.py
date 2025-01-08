@@ -1,4 +1,5 @@
 from langchain.prompts import PromptTemplate
+from config import TWEET_CATEGORIES
 
 class PromptManager:
     @staticmethod
@@ -63,6 +64,33 @@ class PromptManager:
             """
         elif media_type == "governance_forum_summary":
             summary_template, refine_template = PromptManager.get_governance_forum_summary_prompts()
+        elif media_type == "twitter_digest":
+            summary_template = """
+            You are an analytics professional at Lido, a Liquid Staking protocol for Ethereum.
+            You have multiple tweets from X (Twitter). Summarize them in markdown, highlighting references to
+            Lido, LSDs, Ethereum staking or the ethereum ecosystem at large, or crypto in general if they exist. Organize key points clearly.
+
+            IMPORTANT. Your output must be of 250 characters or less.
+
+            Tweets:
+            {text}
+
+            YOUR SUMMARY:
+            """
+            refine_template = """
+            You are refining a summary of tweets for Lido context. Only refine if there's new relevant info.
+            Existing summary:
+            {existing_answer}
+
+            Additional tweets:
+            {text}
+
+            IMPORTANT. Your output must be of 400 characters or less.
+            """
+            return (
+                PromptTemplate.from_template(summary_template),
+                PromptTemplate.from_template(refine_template)
+            )
         else:
             # Article
             summary_template = """
@@ -72,7 +100,7 @@ class PromptManager:
             YOUR NOTES:
             """
             refine_template = """
-            You are an analytics professional at Lido, a Liquid Staking protocol for Ethereum. You are given a transcript of Twitter Spaces in the crypto/web3 space that may or may not be related to Lido.
+            You are an analytics professional at Lido, a Liquid Staking protocol for Ethereum. You are given a transcript of an article that may or may not be related to Lido.
             Given the transcript, you are refining structured notes in markdown format. Think of your notes as key takeaways, TLDRs, and executive summaries.
 
             Here is the existing note:
@@ -133,6 +161,30 @@ class PromptManager:
             """
         elif media_type == "governance_forum":
             exec_template, refine_exec_template = PromptManager.get_governance_forum_executive_prompts()
+        elif media_type == "twitter_digest":
+            exec_template = """
+            You have a summary of multiple tweets which may or may not be related to crypto/web3, but they are from Twitter accounts in the space.. Focus on Lido or LSD references.
+            {text}
+
+            Given the summary, you are refining an executive summary in markdown format. Think of your notes as key takeaways, TLDRs, and executive summaries.
+
+            IMPORTANT. Your output must be of 250 characters or less.
+
+            """
+            refine_exec_template = """
+            Refine the existing Twitter digest executive summary if new text is relevant. Otherwise return original.
+            Existing summary:
+            {existing_answer}
+
+            Additional snippet:
+            {text}
+
+            IMPORTANT. Your output must be of around 300 characters or less.
+            """
+            return (
+                PromptTemplate.from_template(exec_template),
+                PromptTemplate.from_template(refine_exec_template)
+            )
         else:
             # Default: Article
             exec_template = """
@@ -229,4 +281,69 @@ class PromptManager:
             "LSDs, Ethereum staking, or competitor LSD protocols. Also consider if it can indirectly impact Lido's strategy, "
             "treasury, integrations, or governance.\n\n"
             "Answer 'yes' if relevant. Otherwise, answer 'no'."
+        )
+    
+    @staticmethod
+    def get_twitter_relevance_prompt():
+        """
+        Returns the short text we will feed into GPT to check if a tweet is relevant
+        to Lido, LSD protocols, stETH, wstETH, or Ethereum.
+        """
+        return (
+            "You are an assistant. You are given the entire text of a tweet."
+            "Determine if this topic is relevant to Lido (a liquid staking protocol), its ecosystem, stETH, wstETH, "
+            "LSDs, Ethereum staking and Ethereum's ecosystem, or competitor LSD protocols. Also consider if it can indirectly impact Lido's strategy, "
+            "treasury, integrations, or governance.\n\n"
+            "Answer 'yes' if relevant. Otherwise, answer 'no'."
+        )
+    
+    @staticmethod
+    def get_governance_forum_category_prompt():
+        """
+        This prompt instructs GPT to pick exactly one category for each governance topic.
+        """
+        return (
+        "You are given a governance forum post's full text."
+        "You must assign exactly ONE category from this fixed list:"
+
+        "1) 'Lido Related Updates 💧' - topics directly from the Lido Research Forum at research.lido.fi\n"
+        "2) 'Competitor Updates 🥊' - these are usually topics from competitors such as Stader Labs, EtherFi, RocketPool, Karak, Frax, Chaos Labs, EigenLayer"
+        "or simply topics on other forums that are prompting some competing protocols\n"
+        "3) 'Lending Markets 🏦' - topics from lending protocols such as AAVE, Compound, Morpho, Venus, ListaDAO, MakerDAO, Moonwell or related to token lending, borrowing or similar topics\n"
+        "4) 'Layer2s 🔗' - from forums such as Polygon, Arbitrum, Optimism or other layer twos or updates around layer 2s\n"
+        "5) 'DEXes 💱' - topics related to decentralized exchanges such as Balancer, GMX, Curve, Sushiswap, Uniswap, dYdX or similar discussions around decentralized trading\n"
+        "6) 'Grants and Funding 💸' \n"
+        "7) 'Misc. 🌀' - topics that do not fit in the other categories or interesting news overall\n"
+        "Return your answer exactly as the category name (including the emoji if present). \n"
+        "Try to be certain on the category, otherwise pick something really close, or default to 'Misc. 🌀'.\n"
+       "Your output must be exactly one line, with only the category text (including the emoji) and nothing else."
+        )
+    
+    @staticmethod
+    def get_twitter_category_prompt() -> str:
+        """
+        Built the prompt for categorizing a tweet into one of the categories
+        read from the TWEET_CATEGORIES JSON in config.py.
+
+        If TWEET_CATEGORIES is empty, we fallback to a single 'Misc. 🌀' category.
+        """
+        # Fallback
+        if not TWEET_CATEGORIES:
+            return (
+                "You are given the entire text of a tweet. You must assign exactly ONE category.\n\n"
+                "Only available category is 'Misc. 🌀'. Return exactly 'Misc. 🌀'."
+            )
+
+        # Build category list
+        bullet_list = "\n".join(
+            [f"- {item.get('category_name', 'Misc. 🌀')}" for item in TWEET_CATEGORIES]
+        )
+
+        return (
+            "You are given the entire text of a tweet. You must assign exactly ONE category "
+            "from the list of known tweet categories below. Return your answer exactly as the category "
+            "name (including any emoji if present). If uncertain, answer 'Misc. 🌀'.\n\n"
+            "Here are the possible categories (one per line):\n"
+            f"{bullet_list}\n\n"
+            "Answer with exactly one line, containing the category name only (and emoji if present)."
         )

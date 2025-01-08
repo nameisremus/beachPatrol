@@ -26,6 +26,7 @@ lxml = {extras = ["html-clean"], version = "^5.3.0"}
 nltk = "3.9"
 pymupdf = "^1.24.10"
 py-cord = "^2.6.1"
+tweety-ns = {url = "https://github.com/mahrtayyab/tweety/archive/refs/heads/main.zip"}
 
 
 [build-system]
