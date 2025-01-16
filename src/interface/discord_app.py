@@ -84,6 +84,13 @@ async def on_ready():
     daily_scheduled_tasks.start()
     print("Daily scheduled tasks loop started.")
 
+@bot.slash_command(description="Check if the bot is responsive.")
+async def ping(ctx):
+    """
+    /ping -> Responds with 'Pong!' and the bot's latency.
+    """
+    await ctx.respond(f"Pong! 🏓")
+
 @bot.slash_command()
 async def generate_summary(ctx, url: str):
     """
@@ -413,8 +420,8 @@ async def daily_scheduled_tasks():
         )
         tasks_list.append((job, None, "governance_forum", None, 0))
 
-    # 2) If it's 07:00, schedule Twitter digest
-    if now_utc.hour == 7 and now_utc.minute == 0:
+    # 2) If it's 06:00, schedule Twitter digest
+    if now_utc.hour == 6 and now_utc.minute == 0:
         print("[daily_scheduled_tasks] It's 07:00 UTC -> scheduling daily twitterdigest.")
         job2 = celery_app.send_task(
             "worker.scrape_twitter_digest",

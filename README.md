@@ -136,7 +136,7 @@ The bot responds with both an executive summary and detailed notes, formatted in
 - `/generate_twitter_digest [timeframe=1d/2d] [relevancy_filter=True/False]`
     - Gathers tweets from configured Twitter accounts, categorizes them, and returns a digest which includes a legend linking to specific tweets.
 
-- `/generate_twitter_digest [timeframe=1d/2d] [relevancy_filter=True/False]`
+- `/generate_twitter_account_summary <username> [timeframe=1d/2d/7d/etc]`
     - Summarizes all tweets for a specific Twitter user within the given timeframe. The summary includes categorization and a legend of analyzed tweets, fetching additional pages as needed to cover the entire timeframe.
 
 ### Background Tasks

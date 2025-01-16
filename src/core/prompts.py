@@ -68,7 +68,7 @@ class PromptManager:
             summary_template = """
             You are an analytics professional at Lido, a Liquid Staking protocol for Ethereum.
             You have multiple tweets from X (Twitter). Summarize them in markdown, highlighting references to
-            Lido, LSDs, Ethereum staking or the ethereum ecosystem at large, or crypto in general if they exist. Organize key points clearly.
+            Lido, LSTs, Ethereum staking, the ethereum ecosystem at large, or crypto in general if they exist. Organize key points clearly.
 
             IMPORTANT. Your output must be of 250 characters or less.
 
@@ -94,14 +94,24 @@ class PromptManager:
         else:
             # Article
             summary_template = """
-            You are an analytics professional at Lido Finance ... (Article summary)
+            You are an analytics professional at Lido Finance, a leading Liquid Staking protocol for Ethereum. 
+            Your task is to summarize content related to Lido, DeFi, staking, or the broader Ethereum ecosystem. 
+            The content provided could be an article, a tweet or tweet thread, or a YouTube video transcript.
+
+            Analyze the provided content and extract key takeaways, TLDRs, and executive summaries in a structured markdown format.
+            Ensure that your summary is clear, concise, and useful for decision-makers.
+
+            Content:
             {text}
-            
+
             YOUR NOTES:
             """
             refine_template = """
-            You are an analytics professional at Lido, a Liquid Staking protocol for Ethereum. You are given a transcript of an article that may or may not be related to Lido.
-            Given the transcript, you are refining structured notes in markdown format. Think of your notes as key takeaways, TLDRs, and executive summaries.
+            You are an analytics professional at Lido Finance, specializing in Liquid Staking and the Ethereum ecosystem. 
+            You are given a transcript of content (which could be an article, a tweet or tweet thread, or a YouTube video transcript). 
+            Your goal is to refine and improve structured notes in markdown format, ensuring clarity, accuracy, and completeness.
+
+            Consider the notes as key takeaways, TLDRs, and executive summaries.
 
             Here is the existing note:
 
@@ -110,7 +120,7 @@ class PromptManager:
             New context:
             {text}
 
-            Refine ...
+            Refine the notes based on the new information while maintaining structure and coherence.
             """
 
         return (PromptTemplate.from_template(summary_template),
@@ -163,7 +173,7 @@ class PromptManager:
             exec_template, refine_exec_template = PromptManager.get_governance_forum_executive_prompts()
         elif media_type == "twitter_digest":
             exec_template = """
-            You have a summary of multiple tweets which may or may not be related to crypto/web3, but they are from Twitter accounts in the space.. Focus on Lido or LSD references.
+            You have a summary of multiple tweets which may or may not be related to crypto/web3, but they are from Twitter accounts in the space. Focus on Lido, LST and Ethereum references.
             {text}
 
             Given the summary, you are refining an executive summary in markdown format. Think of your notes as key takeaways, TLDRs, and executive summaries.
@@ -191,7 +201,7 @@ class PromptManager:
             Given the summary of an Article:
             {text}
 
-            Generate an extremely brief executive summary for Lido contributors. It should be concise, focused, and only contain information relevant to Lido Finance. 
+            Generate an extremely brief executive summary for Lido contributors. It should be concise, focused, and, if available, contain information relevant to Lido. 
             """
             refine_exec_template = """
             Refine an executive summary in markdown format based on the following article summary:

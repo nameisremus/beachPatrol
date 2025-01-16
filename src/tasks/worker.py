@@ -16,7 +16,7 @@ r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
 def scrape_space(self, space_url, save_to_watchlist_results=False):
     print(f"Processing space URL {space_url}...")
     try:
-        res = process_twitter_space(space_url, "cookies.txt")
+        res = process_twitter_space(space_url, "../../cookies.txt")
         if save_to_watchlist_results:
             r.rpush('watchlist_results', json.dumps(res))
         return (res["exec_sum"], res["notes"])

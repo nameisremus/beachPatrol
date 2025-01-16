@@ -12,7 +12,7 @@ def check_if_live():
     urls_to_check = r.lrange('watchlist', 0, -1)
     for url in urls_to_check:
         url_str = url.decode('utf-8')
-        tw_space = get_twitter_space_if_live(url_str, "../cookies.txt")
+        tw_space = get_twitter_space_if_live(url_str, "../../cookies.txt")
         if tw_space is not None:
             print(f"Space {url_str} is live!")
             print(tw_space["url"])
