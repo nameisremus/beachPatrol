@@ -13,3 +13,4 @@ dump.rdb
 src/tasks/session.tw_session
 tweet_accounts.json
 tweet_categories.json
+/src/commands/generate_tweet_summary/__pycache__

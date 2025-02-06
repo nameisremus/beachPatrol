@@ -298,6 +298,13 @@ async def check_tasks():
                         "comprehensive summary of tweets for this user.)*\n\n"
                     )
                 },
+                "tweet_summary": {
+                    "base_title": f"Tweet Summary, model={OPENAI_MODEL}",
+                    "disclaimers": (
+                        "\n\n*(Above is the Executive Summary. Next pages contain a more "
+                        "comprehensive summary of tweets for this user.)*\n\n"
+                    )
+                },
             }
             default_config = {
                 "base_title": f"Update, model={OPENAI_MODEL}",
@@ -402,6 +409,30 @@ async def check_tasks():
             except Exception as e:
                 print(f"[check_tasks] Exception checking task progress: {e}")
 
+
+@bot.slash_command(description="Summarize a tweet (or tweet thread) URL with optional parsing of comments.")
+async def generate_tweet_summary(
+    ctx,
+    url: str,
+    parse_comments: Option(bool, "Whether to parse tweet comments", default=False)  # type: ignore
+):
+    """
+    /generate_tweet_summary <url> [parse_comments=False]
+    Summarizes a tweet or tweet thread provided by the URL.
+    """
+    original_msg = await ctx.respond(
+        f"Processing tweet summary for URL {url}, parse_comments={parse_comments}..."
+    )
+    sent_msg = await ctx.interaction.original_response()
+
+    job = celery_app.send_task(
+        "worker.scrape_tweet_summary",
+        kwargs={"url": url, "parse_comments": parse_comments}
+    )
+    tasks_list.append((job, ctx, "tweet_summary", sent_msg.id, 0))
+
+
+
 @tasks.loop(minutes=1)
 async def daily_scheduled_tasks():
     """
@@ -421,7 +452,7 @@ async def daily_scheduled_tasks():
         tasks_list.append((job, None, "governance_forum", None, 0))
 
     # 2) If it's 06:00, schedule Twitter digest
-    if now_utc.hour == 6 and now_utc.minute == 0:
+    if now_utc.hour == 6 and now_utc.minute == 31:
         print("[daily_scheduled_tasks] It's 07:00 UTC -> scheduling daily twitterdigest.")
         job2 = celery_app.send_task(
             "worker.scrape_twitter_digest",
