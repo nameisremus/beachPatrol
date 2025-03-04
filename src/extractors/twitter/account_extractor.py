@@ -3,28 +3,36 @@ import openai
 import re
 from datetime import datetime, timedelta, timezone
 
-from tweety import Twitter
+from tweety import Twitter, TwitterAsync
 from tweety.types.twDataTypes import Tweet, SelfThread
+from tweety.types import Proxy, PROXY_TYPE_HTTP
 
 from .digest_extractor import (
     parse_timeframe,
     _replace_large_headings,
     discordify_headings,
     _expand_tweet_and_threads,
-    categorize_tweet,
+    get_content_tags,
 )
 
 from core.core import (
     summarize_transcript,
-    get_executive_summary
+    get_executive_summary,
+    do_custom_prompt,
+    get_valid_model
 )
 from config import (
     OPENAI_API_KEY,
     TWITTER_USER,
-    TWITTER_PASSWORD
+    TWITTER_PASSWORD,
+    PROXY_IP,
+    PROXY_PORT,
+    PROXY_USERNAME,
+    PROXY_PASSWORD
 )
 
 openai.api_key = OPENAI_API_KEY
+
 
 async def _fetch_pages_until_cutoff(app: Twitter, username: str, cutoff_dt: datetime) -> list[Tweet | SelfThread]:
     """
@@ -56,11 +64,10 @@ async def _fetch_pages_until_cutoff(app: Twitter, username: str, cutoff_dt: date
 
             collected.extend(new_tweets)
 
-            # Check if we have any older tweet
+            # Check if any tweet is older than cutoff
             older_found = any(
-                t.created_on.replace(tzinfo=timezone.utc) < cutoff_dt
+                isinstance(t, Tweet) and t.created_on.replace(tzinfo=timezone.utc) < cutoff_dt
                 for t in new_tweets
-                if isinstance(t, Tweet)
             )
             if older_found:
                 # Stop fetching further pages
@@ -68,7 +75,7 @@ async def _fetch_pages_until_cutoff(app: Twitter, username: str, cutoff_dt: date
 
             page += 1
 
-            # Optional: put a maximum safety if you like, e.g. if page > 10 then break
+            # (Optional) you could stop if page > 10, etc.
         except Exception as e:
             print(f"[fetch_pages_until_cutoff] Error fetching page={page} for {username}: {e}")
             break
@@ -78,13 +85,20 @@ async def _fetch_pages_until_cutoff(app: Twitter, username: str, cutoff_dt: date
 
 async def _expand_and_filter_tweets(app: Twitter, all_raw, cutoff_dt: datetime) -> dict:
     """
-    Expand & filter the raw Tweets / SelfThreads, building a final list of tweet dicts.
-    Returns a dict with merged_tweets, normal_count, retweet_count.
+    Expand & filter the raw Tweets / SelfThread objects, building a final list of 
+    tweets in dictionary form. Also count how many are normal vs retweets.
+
+    Returns a dict:
+      {
+        "merged_tweets": [...],  # list of dicts with "id", "text", "date", etc.
+        "normal_count": int,
+        "retweet_count": int
+      }
     """
     merged_ids = set()
     final_list = []
 
-    # Deduplicate first
+    # 1) Deduplicate tweet objects
     for tw in all_raw:
         if isinstance(tw, Tweet):
             if tw.id not in merged_ids:
@@ -100,17 +114,17 @@ async def _expand_and_filter_tweets(app: Twitter, all_raw, cutoff_dt: datetime) 
     merged_normal = 0
     merged_retweets = 0
 
-    # Now expand each tweet
+    # 2) Expand threads/retweets, then filter out older
     for raw_tweet in final_list:
         try:
             expansion_res = await _expand_tweet_and_threads(app, raw_tweet)
             merged_normal += expansion_res["normal_count"]
             merged_retweets += expansion_res["retweet_count"]
 
-            # Filter out older than cutoff
             for item in expansion_res["expanded_list"]:
                 tw = item["tweet_obj"]
-                if (tw.created_on.replace(tzinfo=timezone.utc) < cutoff_dt):
+                if isinstance(tw, Tweet) and tw.created_on.replace(tzinfo=timezone.utc) < cutoff_dt:
+                    # subtract if it's older than cutoff
                     if item["is_retweet"]:
                         merged_retweets -= 1
                     else:
@@ -127,7 +141,7 @@ async def _expand_and_filter_tweets(app: Twitter, all_raw, cutoff_dt: datetime) 
             print(f"[expand_and_filter_tweets] Error expanding tweet for single-user: {e}")
             continue
 
-    # No negatives
+    # avoid negative
     if merged_normal < 0:
         merged_normal = 0
     if merged_retweets < 0:
@@ -140,33 +154,49 @@ async def _expand_and_filter_tweets(app: Twitter, all_raw, cutoff_dt: datetime) 
     }
 
 
-def process_twitter_account_summary(username: str, timeframe: str = "1d") -> tuple[str, str]:
+def process_twitter_account_summary(username: str, timeframe: str = "1d", model=None, prompt=None) -> tuple[str, str]:
     """
     Summarize tweets for a single user within a timeframe, returning (exec_summary, notes).
-    We'll also:
-      - keep fetching pages until we see older tweets or no more data.
-      - build a 'legend' referencing each tweet by [1], [2], etc. 
-      - replicate the category logic from your multi-user digest.
+
+    Logic:
+      1) If `prompt` is given, we skip normal multi-step approach
+         and do a single do_custom_prompt(...) over the combined tweets text,
+         returning that result for both exec_sum and notes.
+      2) Otherwise, do the normal multi-step approach:
+         - fetch tweets
+         - build snippet list
+         - categorize each snippet with get_content_tags
+         - create summary & executive summary
+         - build a 'legend' referencing each tweet by [1], [2], etc.
+         - note how many normal vs retweets
+      3) If `model` is provided but no `prompt`, we forcibly re-summarize 
+         with that model in the final step.
+
+    The function is run in a synchronous context but uses an async block 
+    for the Tweety calls (run_until_complete).
     """
     from celery import current_task
 
     cutoff_dt = datetime.now(timezone.utc) - parse_timeframe(timeframe)
-    print(f"[process_twitter_account_summary] username={username}, timeframe={timeframe}, cutoff={cutoff_dt.isoformat()}")
+    print(f"[process_twitter_account_summary] username={username}, timeframe={timeframe}, model={model}, prompt={prompt}, cutoff={cutoff_dt.isoformat()}")
 
     async def run_async():
         # 1) Create Tweety client
-        app = Twitter("session")
+        proxy = Proxy(host=PROXY_IP, port=PROXY_PORT, proxy_type=PROXY_TYPE_HTTP, username=PROXY_USERNAME, password=PROXY_PASSWORD)
+
+        app = TwitterAsync("session", proxy=proxy)
+
         if TWITTER_USER and TWITTER_PASSWORD:
             print(f"[process_twitter_account_summary] Logging in as {TWITTER_USER}...")
             await app.sign_in(TWITTER_USER, TWITTER_PASSWORD)
             print(f"[process_twitter_account_summary] Logged in user: {app.me}")
 
-        # 2) Keep fetching more pages until we see older tweets
+        # 2) Fetch tweets until cutoff
         all_raw_tweets = await _fetch_pages_until_cutoff(app, username, cutoff_dt)
         if not all_raw_tweets:
             return ("No tweets found", "No tweets found within timeframe.")
 
-        # 3) Expand + filter out older
+        # 3) Expand & filter older tweets
         result_dict = await _expand_and_filter_tweets(app, all_raw_tweets, cutoff_dt)
         final_tweets = result_dict["merged_tweets"]
         normal_count = result_dict["normal_count"]
@@ -175,7 +205,7 @@ def process_twitter_account_summary(username: str, timeframe: str = "1d") -> tup
         if not final_tweets:
             return ("No tweets found", "No tweets found within timeframe.")
 
-        # Optional: progress
+        # For Celery progress
         if current_task:
             current_task.update_state(
                 state="PROGRESS",
@@ -187,7 +217,7 @@ def process_twitter_account_summary(username: str, timeframe: str = "1d") -> tup
                 }
             )
 
-        # 4) Build snippet list + categorize for the legend
+        # 4) Build snippet list & do get_content_tags
         cat_map = {}
         root_ids = []
         tweet_idx = 1
@@ -195,12 +225,14 @@ def process_twitter_account_summary(username: str, timeframe: str = "1d") -> tup
 
         for tw in final_tweets:
             snippet = f"@{username} ({tw['date']}): {tw['text']}"
-            # In your single-user approach, we are not filtering by relevancy 
-            # but if you do want to skip irrelevant tweets, 
-            # you can call: if not check_tweet_relevance(snippet): continue
 
-            # categorize
-            tweet_category = categorize_tweet(snippet)
+            # categorize using get_content_tags
+            tags_for_tweet = get_content_tags(snippet, "article")
+            if tags_for_tweet:
+                tweet_category = tags_for_tweet[0]
+            else:
+                tweet_category = "Misc. 🌀"
+
             if tweet_category not in cat_map:
                 cat_map[tweet_category] = []
             cat_map[tweet_category].append(tweet_idx)
@@ -210,11 +242,17 @@ def process_twitter_account_summary(username: str, timeframe: str = "1d") -> tup
             tweet_idx += 1
 
         if not final_snippets:
-            return ("No relevant tweets found.", "No tweets found or none were relevant within timeframe.")
+            return ("No relevant tweets found.", "No tweets found or none relevant.")
 
-        # 5) Summarize all 
+        # 5) If we have a `prompt`, do a single do_custom_prompt on all combined text
         joined_text = "\n\n".join(final_snippets)
-        # We can reuse "article" or define a new media_type. We'll reuse "article".
+        if prompt:
+            # custom approach
+            chosen_model = get_valid_model(model)
+            custom_result = do_custom_prompt(joined_text, prompt, chosen_model)
+            return (custom_result, custom_result)
+
+        # 6) normal approach => do transcript -> summary -> exec
         summary = summarize_transcript(joined_text, media_type="article")
         summary = _replace_large_headings(summary)
         summary = discordify_headings(summary)
@@ -223,7 +261,21 @@ def process_twitter_account_summary(username: str, timeframe: str = "1d") -> tup
         exec_summary = _replace_large_headings(exec_summary)
         exec_summary = discordify_headings(exec_summary)
 
-        # 5b) Build legend: referencing each tweet by [1], [2], etc.
+        # If `model` is specified, forcibly re-summarize with that model
+        # by doing a do_custom_prompt with a typical summarizing instruction
+        if model:
+            chosen_model = get_valid_model(model)
+            # We'll feed a quick summarizing prompt:
+            summarizing_prompt = "Please summarize the following tweets in detail:\n\n"
+            forced_summary = do_custom_prompt(joined_text, summarizing_prompt, chosen_model)
+            # Then do an exec summary:
+            short_prompt = "Please produce a short executive summary of the above text."
+            forced_exec = do_custom_prompt(forced_summary, short_prompt, chosen_model)
+
+            summary = forced_summary
+            exec_summary = forced_exec
+
+        # 7) Build the "legend" referencing each tweet [1], [2], ...
         dedup_ids = list(dict.fromkeys(root_ids))
         link_map = {}
         for i, rid in enumerate(dedup_ids, start=1):
@@ -246,7 +298,7 @@ def process_twitter_account_summary(username: str, timeframe: str = "1d") -> tup
         legend_text = "\n".join(legend_lines)
         exsumm_legend = f"{exec_summary}\n\n**:information_source:** {legend_text}"
 
-        # 6) Build normal vs retweets line
+        # 8) normal vs retweets line
         if normal_count == 0 and retweet_count == 0:
             line_label = "No tweets"
         elif normal_count > 0 and retweet_count > 0:
@@ -258,20 +310,17 @@ def process_twitter_account_summary(username: str, timeframe: str = "1d") -> tup
         else:
             line_label = f"{normal_count} tweets and {retweet_count} retweets"
 
-        # 7) Build final notes
-        # We keep it similar to the multi-user approach
-        # Example: Title line might be "### 1. [@username] - X tweets" etc.
+        # final notes
         final_notes = f"# Single-User Twitter Summary (Last {timeframe})\n\n"
         final_notes += f"### [@{username}](https://x.com/{username}) - {line_label} within the timeframe\n\n"
         final_notes += summary
 
-        # exec_summary includes the legend 
         final_exec = exsumm_legend
         final_exec += f"\n\n**Processed {normal_count} normal tweets and {retweet_count} retweets within the timeframe.**"
 
         return (final_exec.strip(), final_notes.strip())
 
-    # 8) Run async
+    # 9) run async
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:

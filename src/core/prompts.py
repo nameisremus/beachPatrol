@@ -1,5 +1,4 @@
 from langchain.prompts import PromptTemplate
-from config import TWEET_CATEGORIES
 
 class PromptManager:
     @staticmethod
@@ -91,6 +90,50 @@ class PromptManager:
                 PromptTemplate.from_template(summary_template),
                 PromptTemplate.from_template(refine_template)
             )
+        elif media_type == "tweet_or_thread":
+            summary_template = """
+            You are an analyst tasked with summarizing a tweet or a tweet thread.
+            Focus on extracting the key information, context, and main ideas expressed in the original tweets.
+            
+            Text:
+            {text}
+            
+            YOUR NOTES:
+            """
+            refine_template = """
+            Refine the summary for the main tweet or tweet thread.
+            Existing summary:
+            {existing_answer}
+            
+            Additional context:
+            {text}
+            """
+            return (
+                PromptTemplate.from_template(summary_template),
+                PromptTemplate.from_template(refine_template)
+            )
+        elif media_type == "tweet_comments":
+            summary_template = """
+            You are an analyst tasked with summarizing the comments (replies) to a tweet or tweet thread.
+            Focus on identifying the overall sentiment, key points raised by the community, and any notable reactions.
+            
+            Comments:
+            {text}
+            
+            YOUR NOTES:
+            """
+            refine_template = """
+            Refine the summary for the tweet comments.
+            Existing summary:
+            {existing_answer}
+            
+            Additional comments:
+            {text}
+            """
+            return (
+                PromptTemplate.from_template(summary_template),
+                PromptTemplate.from_template(refine_template)
+            )
         else:
             # Article
             summary_template = """
@@ -122,7 +165,6 @@ class PromptManager:
 
             Refine the notes based on the new information while maintaining structure and coherence.
             """
-
         return (PromptTemplate.from_template(summary_template),
                 PromptTemplate.from_template(refine_template))
 
@@ -216,7 +258,6 @@ class PromptManager:
 
             Your refined executive summary:
             """
-
         return (PromptTemplate.from_template(exec_template),
                 PromptTemplate.from_template(refine_exec_template))
     
@@ -329,31 +370,39 @@ class PromptManager:
        "Your output must be exactly one line, with only the category text (including the emoji) and nothing else."
         )
     
+
     @staticmethod
-    def get_twitter_category_prompt() -> str:
+    def get_telegram_format_prompt() -> PromptTemplate:
         """
-        Built the prompt for categorizing a tweet into one of the categories
-        read from the TWEET_CATEGORIES JSON in config.py.
-
-        If TWEET_CATEGORIES is empty, we fallback to a single 'Misc. 🌀' category.
+        Returns a prompt template that instructs OpenAI to convert a Discord-formatted message
+        into Telegram-friendly Markdown formatting.
         """
-        # Fallback
-        if not TWEET_CATEGORIES:
-            return (
-                "You are given the entire text of a tweet. You must assign exactly ONE category.\n\n"
-                "Only available category is 'Misc. 🌀'. Return exactly 'Misc. 🌀'."
-            )
-
-        # Build category list
-        bullet_list = "\n".join(
-            [f"- {item.get('category_name', 'Misc. 🌀')}" for item in TWEET_CATEGORIES]
+        template = (
+            "The following text is formatted for Discord. Convert it into Telegram HTML. "
+            "Preserve all the content but adjust any formatting including, but not limited to bolding, italics, headlines, and hyperlinks added properly on keywords and not in square brackets"
+            "[] so they render properly in Telegram HTML, using the tags. "
+            "Replace words wrapped by stars * or **, or words that start with one or multiple hashtags # with the words in bold formatted for telegram."
+            "Do not alter any content; only change the formatting to create lists, but keep numbered items if they already exist, and transform headlines into bold tags wrapped content."
+            "Also, keep the newlines to a minimum, there shouldn't be any new lines between list items, only a maximum of one new line between numbered items, and 3 consecutive new lines or more should be merged into one.\n\n"
+            "Discord-formatted text:\n{text}\n\n"
+            "Telegram-formatted text:"
         )
+        return PromptTemplate.from_template(template)
 
-        return (
-            "You are given the entire text of a tweet. You must assign exactly ONE category "
-            "from the list of known tweet categories below. Return your answer exactly as the category "
-            "name (including any emoji if present). If uncertain, answer 'Misc. 🌀'.\n\n"
-            "Here are the possible categories (one per line):\n"
-            f"{bullet_list}\n\n"
-            "Answer with exactly one line, containing the category name only (and emoji if present)."
-        )
+
+    @staticmethod
+    def get_content_tags_prompt() -> PromptTemplate:
+        template = """
+        You are given the following content (executive summary + full summary) from a {media_type}:
+
+        {full_text}
+
+        Below is a list of possible tags. Return only the tags (exact text from the list) that are most relevant, separated by commas. 
+        If none apply, return empty.
+
+        Possible tags:
+        {possible_tags}
+
+        Answer with the chosen tags on a single line, comma-separated (no extra words).
+        """
+        return PromptTemplate.from_template(template)

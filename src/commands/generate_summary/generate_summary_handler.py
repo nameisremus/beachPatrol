@@ -2,9 +2,7 @@ from .generate_summary_router import get_summary_router
 
 def save_summary(article_details: dict, save_path: str) -> bool:
     """
-    Saves the summary details to a file.
-    This implementation writes the URL, executive summary, and 
-    full summary to a text file which the user can download
+    Saves the summary details to a file, which the user can download
     """
     try:
         with open(save_path, "w", encoding="utf-8") as f:
@@ -18,52 +16,71 @@ def save_summary(article_details: dict, save_path: str) -> bool:
         print(f"Error saving summary: {e}")
         return False
 
-def process_get_summary(url: str, save: bool = False, save_path: str = "summary.txt", interface: str = "discord") -> dict:
+def process_get_summary(url: str, save: bool = False, save_path: str = "summary.txt", interface: str = "discord",
+                        model: str = None, prompt: str = None) -> dict:
     """
     Handler for the get_summary command.
-    
-    Parameters:
-      - url: the URL of the article to summarize.
-      - save: whether to save the summary to a file.
-      - save_path: the file path where the summary should be saved if save is True.
-      - interface: a string indicating which interface is requesting the summary 
-                   (e.g. "discord" or "telegram") so that the formatting can be adapted.
-    
-    Returns a dictionary with:
-      - 'article_url'
-      - 'exec_sum'
-      - 'summary'
-      - 'formatted': the output formatted appropriately for the interface.
-      - Any additional keys as needed.
+
+    If `prompt` is provided, we skip the default multi-step logic
+    and do a single call with the user prompt + the extracted article text.
+    Otherwise, proceed with the normal summarize + get_executive_summary pipeline.
     """
-    # Get the raw summary details from the router.
-    result = get_summary_router(url)
-    
-    # Optionally save the summary.
+    from core.core import do_custom_prompt, summarize_transcript, get_executive_summary, get_valid_model
+    # Extract raw article details first
+    raw_result = get_summary_router(url)
+
+    final_exec = raw_result.get('exec_sum', '')
+    final_summary = raw_result.get('summary', '')
+
+    if prompt:
+        # Single-call approach
+        full_text = raw_result.get('article_details', {}).get('text', '')
+        # run custom prompt
+        chosen_model = get_valid_model(model)
+        combined_result = do_custom_prompt(full_text, prompt, chosen_model)
+        final_exec = combined_result
+        final_summary = ""
+    else:
+        # normal approach uses existing logic
+        if model:
+            # if user specified a model, we forcibly re-summarize with that model
+            chosen_model = get_valid_model(model)
+            # We'll do a forced re-summarization
+            article_text = raw_result.get('article_details', {}).get('text', '')
+            # first do normal summary
+            new_summary = summarize_transcript(article_text, media_type="article")
+            # then do exec summary
+            new_exec = get_executive_summary(new_summary, media_type="article")
+            final_summary = new_summary
+            final_exec = new_exec
+
+    result = {
+        "article_url": url,
+        "exec_sum": final_exec,
+        "summary": final_summary,
+        "article_details": raw_result
+    }
     if save:
-        saved = save_summary(result, save_path)
-        result['saved'] = saved
-    
-    # Format the output based on the interface.
+        saved_ok = save_summary(result, save_path)
+        result["saved"] = saved_ok
+
+    # Format for interface, by default the interface is discord and TG format gets processed after it
     if interface.lower() == "discord":
-        # For Discord, we use an embed
         formatted = {
             "title": "Article Summary",
-            "description": result.get("exec_sum", ""),
-            "notes": result.get("summary", "")
+            "description": final_exec,
+            "notes": final_summary
         }
     elif interface.lower() == "telegram":
-        # For Telegram, a plain-text format is common.
         formatted = {
             "text": (
                 f"*Article Summary:*\n\n"
-                f"{result.get('exec_sum', '')}\n\n"
-                f"*Full Summary:*\n{result.get('summary', '')}"
+                f"{final_exec}\n\n"
+                f"*Full Summary:*\n{final_summary}"
             )
         }
     else:
-        # Default to returning the raw result.
         formatted = result
-    
-    result['formatted'] = formatted
+
+    result["formatted"] = formatted
     return result

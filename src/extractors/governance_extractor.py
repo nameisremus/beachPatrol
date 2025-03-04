@@ -75,7 +75,7 @@ def process_governance_forum(
     # Convert timeframe (e.g. '7d') to a timedelta
     timeframe_delta = parse_timeframe(timeframe)
     cutoff = datetime.now(timezone.utc) - timeframe_delta
-    print(f"Timeframe={timeframe}, onlyRelevant={only_relevant}")
+    print(f"Timeframe={timeframe}, relevancyFilter={only_relevant}")
     print(f"Using timeframe cutoff of {timeframe_delta} -> {cutoff.isoformat()}")
 
     # We'll accumulate all relevant topics here
@@ -133,6 +133,9 @@ def process_governance_forum(
                 media_type="governance_forum_summary"
             )
             exec_summary = get_executive_summary(summary, media_type="governance_forum")
+            exec_summary = exec_summary.replace("##", "###")
+            exec_summary = re.sub(r'^(#{4,})(\s+)', r'###\2', exec_summary, flags=re.MULTILINE)
+            exec_summary = re.sub(r'(?m)^###\s+(.*)', r'**\1**', exec_summary, flags=re.MULTILINE)
 
             print(f"Topic '{title}' in {forum_name} is included and summarized.")
             relevant_count += 1
@@ -194,17 +197,13 @@ def process_governance_forum(
                 continue  # skip empty category
 
             # Add category heading
-            combined_notes += f"### {cat}\n\n"
-            combined_exec += f"### {cat}\n\n"
+            combined_notes += f"### {cat}\n"
+            combined_exec += f"### {cat}\n"
 
             for i, rt in enumerate(cat_items, start=1):
-                combined_notes += (
-                    f"{i}.) [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>)\n"
-                    f"   {rt['summary']}\n\n"
-                )
-                combined_exec += (
-                    f"{i}. [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>) - {rt['exec_summary']}\n\n"
-                )
+                combined_notes += f"{i}. [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>)\n{rt['summary']}\n\n"
+                combined_exec += f"{i}. [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>) - {rt['exec_summary']}\n\n"
+
 
     print("Governance forum processing completed.")
     return {

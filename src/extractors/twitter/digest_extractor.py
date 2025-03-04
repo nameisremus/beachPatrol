@@ -3,21 +3,26 @@ import openai
 import re
 from datetime import datetime, timedelta, timezone
 
-from tweety import Twitter
+from tweety import Twitter, TwitterAsync
 from tweety.types.twDataTypes import Tweet, SelfThread
+from tweety.types import Proxy, PROXY_TYPE_HTTP
 
 from core.core import (
     summarize_transcript,
     get_executive_summary,
     check_tweet_relevance,
-    categorize_tweet
+    get_content_tags
 )
 from config import (
     OPENAI_API_KEY,
     TWITTER_ACCOUNTS,
     TWITTER_ACCOUNTS_DICT,
     TWITTER_USER,
-    TWITTER_PASSWORD
+    TWITTER_PASSWORD,
+    PROXY_IP,
+    PROXY_PORT,
+    PROXY_USERNAME,
+    PROXY_PASSWORD
 )
 
 openai.api_key = OPENAI_API_KEY
@@ -253,7 +258,9 @@ def process_twitter_digest(timeframe: str = "1d", only_relevant: bool = True):
 
     async def run_async():
         # 1) create Tweety client
-        app = Twitter("session")
+        proxy = Proxy(host=PROXY_IP, port=PROXY_PORT, proxy_type=PROXY_TYPE_HTTP, username=PROXY_USERNAME, password=PROXY_PASSWORD)
+
+        app = TwitterAsync("session", proxy=proxy)
         if TWITTER_USER and TWITTER_PASSWORD:
             print(f"[process_twitter_digest] Logging in as {TWITTER_USER}...")
             await app.sign_in(TWITTER_USER, TWITTER_PASSWORD)
@@ -317,7 +324,12 @@ def process_twitter_digest(timeframe: str = "1d", only_relevant: bool = True):
                         continue
 
                 # categorize the tweet
-                tweet_category = categorize_tweet(snippet)
+                tags_for_tweet = get_content_tags(snippet, "twitter_digest")
+                if tags_for_tweet:
+                    tweet_category = tags_for_tweet[0]
+                else:
+                    tweet_category = "Misc. 🌀"
+
                 if tweet_category not in cat_map:
                     cat_map[tweet_category] = []
                 cat_map[tweet_category].append(tweet_idx)
@@ -377,7 +389,6 @@ def process_twitter_digest(timeframe: str = "1d", only_relevant: bool = True):
                 line_label = f"{normal_count} tweets and {retweet_count} retweets"
 
             # 7) Enhance top line with user display_name & organization
-            from config import TWITTER_ACCOUNTS_DICT
             display_name = ""
             organization = ""
             if username in TWITTER_ACCOUNTS_DICT:

@@ -14,3 +14,7 @@ src/tasks/session.tw_session
 tweet_accounts.json
 tweet_categories.json
 /src/commands/generate_tweet_summary/__pycache__
+governance_forums.json
+/src/core/integrations/__pycache__
+content_tags.json
+*.pyc

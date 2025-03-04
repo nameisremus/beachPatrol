@@ -1,0 +1,53 @@
+volumes:
+  redis_data: {}
+
+services:
+  redis:
+    image: redis:6.2-alpine
+    container_name: "redis_service"
+    command: ["redis-server", "--port", "${REDIS_PORT}", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT}:${REDIS_PORT}"
+    volumes:
+      - redis_data:/data
+    environment:
+      - REDIS_PORT=${REDIS_PORT}
+
+  celeryworker:
+    build: .
+    container_name: "celery_worker"
+    working_dir: /app/src/tasks
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/src
+    command: >
+      celery -A worker worker --loglevel=info
+
+  discordbot:
+    build: .
+    container_name: "discord_bot"
+    working_dir: /app/src/interface
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/src
+    command: >
+      python discord_app.py
+
+  telegrambot:
+    build: .
+    container_name: "telegram_bot"
+    working_dir: /app/src/interface
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/src
+    command: >
+      python telegram_bot.py

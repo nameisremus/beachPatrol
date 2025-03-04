@@ -1,31 +1,54 @@
 # beachPatrol
 
-🏖️🚓**beachPatrol** is a project by [LidoDAO contributors](https://www.lido.fi) with the purpose of amplifying the eyes and ears of the Lido DAO. It empowers contributors by providing pre-packaged AI meta-aggregation and parsing across articles, governance forums, Twitter profiles, Twitter Spaces and YouTube videos.
+🏖️🚓**beachPatrol** is a project by [LidoDAO contributors](https://www.lido.fi) with the purpose of amplifying the eyes and ears of the Lido DAO. It empowers contributors by providing pre-packaged AI meta-aggregation and parsing across articles, governance forums, Twitter profiles, Twitter Spaces, YouTube videos and more.
 
-**Beach Patrol’s purpose** is straightforward: it continuously monitors these sources, processes the data using AI-driven summarization, and posts timely updates in a Discord channel via a persistent, paginated interface.
+**Beach Patrol’s purpose** is straightforward: it continuously monitors these sources, processes the data using AI-driven summarization, and posts timely updates either via Discord or Telegram through a persistent, paginated interface. Additionally, the bot can publish summaries directly to a Notion database.
 
 ---
 
 ## Features
 
-- **Governance Forum Summaries**. Ecosystem and Governance forum updates summarization, over 70 forums available
+- **Governance Forum Summaries**  
+  Ecosystem and governance forum updates summarization (over 70 forums supported).
+  
+- **Twitter Digest**  
+  Generate a digest for a configurable list of Twitter accounts, with categorization by topics.
 
-- **Twitter Digest**. Generate a digest for a customizable list of Twitter accounts, with categorization by topics
+- **Twitter Account Summary**  
+  Summarize tweets for a specific Twitter user over a given timeframe, with categorization and reference legend.
 
-- **Twitter Account Summary**. Summarize tweets for a specific Twitter user over a given timeframe, with categorization and reference legend.
+- **On-Demand Media Summarization**  
+  Request summaries for articles, tweets, Twitter Spaces, and YouTube videos. The bot downloads/transcribes/scrapes as needed, then summarizes the content.
 
-- **On-Demand Media Summarization**. Request summaries for articles, Twitter Spaces, and YouTube videos via Discord commands
+- **Multiple Interfaces**  
+  - **Discord** slash commands (with interactive embeds).  
+  - **Telegram** commands (with paginated messages and inline keyboards).
 
-- **Paginated Views**. Summaries sent to Discord channels as interactive embeds
+- **Optional Output to Notion**  
+  Summaries can be published to a Notion database.
 
-- **Persistent State Management**. Summaries and views remain accessible across bot restarts
+- **Custom Model and Prompt**  
+  Certain commands can be run with a custom OpenAI model or a fully custom prompt. Multiple models can be defined in `.env`.
 
-- **GPT-based Summaries**. Use a stock OpenAI model or refine your own
+- **Paginated Views & Persistent State**  
+  Summaries use multi-page “views” with buttons to navigate pages. Redis saves state so restarts do not break the interactive UI.
+
+- **Basic Password Auth**  
+  Both Discord and Telegram require a password to unlock commands (`BOT_PASSWORD` in `.env`).
+
+---
+
 
 ## Table of Contents
 
-- [Installation](#installation)
+- [Features](#features)
+- [Quickstart](#quickstart-docker-deployment)
 - [Usage](#usage)
+  - [Discord Usage](#discord-usage)
+  - [Telegram Usage](#telegram-usage)
+- [Notion Integration](#notion-integration)
+- [Custom Models and Prompts](#custom-models-and-prompts)
+- [Solution Design](#solution-design)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -48,164 +71,280 @@ git clone https://github.com/nameisremus/beachPatrol
 cd beachPatrol
 ```
 
-3. Install [Poetry](https://python-poetry.org/docs/#installation) if you haven't already
-
-4. Install dependencies:
-
-```bash
-poetry install
-```
-
-5. [Download](https://redis.io/download) and install Redis if you haven't already. By default, beachPatrol uses port **6380**.
-
-6. Start Redis on the desired port (for example, 6380):
-
-```bash
-redis-server --port 6380
-```
-
-7. Install `ffmpeg` and `ffprobe`:
-
-**For macOS using Homebrew**:
-
-```bash
-brew install ffmpeg
-```
-More details here: https://bbc.github.io/bbcat-orchestration-docs/installation-mac-manual/
-
-**For Ubuntu/Debian**:
-
-```bash
-sudo apt update
-sudo apt install ffmpeg
-```
-
-**For Windows**:
-
-- Download the latest static build from the [FFmpeg website](https://ffmpeg.org/download.html).
-- Extract the downloaded files.
-- Add the `bin` directory to your system's PATH environment variable.
-
-8.	Create an .env file from the sample:
+3.	Create an .env file from the sample:
 
 ```bash
 cp .env.sample .env
 ```
-Open the .env file in a text editor and fill in the necessary values, or replace the placeholders with your actual configuration values. Save and close the .env file.
+Open the .env file and fill in the necessary values, or replace the placeholders with your actual configuration values. Save and close the .env file.
 
 After setting up your .env, review the JSON sample files to add or update Twitter account sources and tweet categories as needed:
+- tweet_accounts.sample.json: Use this sample to list the Twitter accounts you want tracked.
+- governance_forums.sample.json: Use this sample to list the Governance forums you want tracked. Make sure the forum is running on Discourse.
+- content_tags.sample.json: Use this sample to define content categories.
 
-	- tweet_accounts.sample.json: Use this sample to list additional Twitter accounts. Follow the provided format to add more sources.
-	- tweet_categories.sample.json: Use this sample to define additional tweet categories. Ensure the format remains consistent for proper loading.
-
-9. Start the Celery worker:
-Open a new terminal window and run:
-
-```bash
-cd src/tasks
-celery -A worker worker --loglevel=info
-```
-
-10. Run the Discord bot
-Open another terminal window and run:
+4. 	Run with Docker:
+Build and start all services:
 
 ```bash
-cd src/interface
-poetry run python discord_app.py
+docker-compose build
+docker-compose up -d
 ```
 
-If everything is set up correctly, the bot should come online in your Discord server.
+This launches:
+- A Redis container (unless you point to an external Redis),
+- A Celery worker container,
+- Containers for the Discord and/or Telegram bots.
+
+5. Check Logs (optional)
+Confirm that the bot connects to Discord/Telegram correctly and is not reporting errors.
+
+```bash
+docker-compose logs -f
+```
+
+If everything is set up correctly, you can start-up the conversation with the bot in Telegram or Discord.
 
 ## Usage
 
-Once the bot is online, it can accept slash commands in your Discord server. Here are the key commands and functionalities:
+Once the bot is online, it can accept commands in your Discord server or via Telegram. By default, many command parameters are **optional** (e.g., `model`, `prompt`, `parse_comments`, etc.). If you omit them, the bot uses default settings (such as the default model from `.env` and the standard summarization prompt).
 
-### Available Slash Commands
+---
 
-Within Discord, once the bot is running, you can use the following slash commands:
-- `/generate_summary <url>`
-Determines the media type of the provided URL (Twitter Space, YouTube video, or article/PDF), then processes it accordingly:
-    - Twitter Spaces: Downloads the audio, transcribes it, and generates summaries.
-    - YouTube Videos: Downloads the audio, transcribes it, and generates summaries.
-    - Articles/PDFs: Scrapes the text and generates summaries.
+### Discord Usage
 
-The bot responds with both an executive summary and detailed notes, formatted in a paginated embed if necessary.
-- `/generate_gov_digest [timeframe=1d/2d/etc] [relevancy_filter=True/False]`
-    - Manually triggers the governance forum scraper. It checks multiple governance forums, optionally filters out irrelevant topics, and posts summarized updates in Discord.
+1. **Unlock the Bot**  
+   - After adding the bot to your Discord server, type the slash command:
+     ```
+     /password <BOT_PASSWORD>
+     ```
+     This authorizes your server to use the bot’s features (assuming `<BOT_PASSWORD>` matches the value in your `.env`).
 
-- `/generate_twitter_digest [timeframe=1d/2d] [relevancy_filter=True/False]`
-    - Gathers tweets from configured Twitter accounts, categorizes them, and returns a digest which includes a legend linking to specific tweets.
+2. **Available Commands**  
+   Once the bot is unlocked, typing `/` in Discord will also show you all available commands, their parameters, and helpful hints. **Note**: all parameters in brackets (`[ ]`) are optional.
 
-- `/generate_twitter_account_summary <username> [timeframe=1d/2d/7d/etc]`
-    - Summarizes all tweets for a specific Twitter user within the given timeframe. The summary includes categorization and a legend of analyzed tweets, fetching additional pages as needed to cover the entire timeframe.
+   - **`/generate_summary <url> [model=xxx] [prompt="..."]`**  
+     Summarize any URL. Can be:
+     - An article or PDF  
+     - A Twitter Space link  
+     - A YouTube video link  
+     - A tweet or tweet thread  
 
-### Background Tasks
+     **Minimal Example** (defaults to your `.env` model/prompt):
+     ```
+     /generate_summary https://example.com/article
+     ```
+     **With custom model & prompt (Note. Do not forget the quotes when entering the custom prompt)**:
+     ```
+     /generate_summary https://example.com/article model=gpt-4.5-preview prompt="Please summarize this article in bullet points"
+     ```
 
-In addition to responding to commands, the bot runs several background tasks:
-- `check_tasks` (every 5 seconds)
-Monitors Celery tasks to check if any have completed. If a task is finished, it retrieves the result and posts the summary and notes to the appropriate Discord channel.
-- `check_watchlist_results` (every 60 seconds)
-Checks a Redis list named watchlist_results for new Twitter Spaces marked as live and sends their summaries to the Discord channel.
-- `daily_scheduled_tasks` (every minute)
-Combines daily scheduling for both governance and Twitter digests:
-	- At 10:00 UTC, automatically runs the governance forum scraper.
-	- At 07:00 UTC, automatically runs the Twitter digest.
+   - **`/generate_tweet_summary <tweet_url> [parse_comments=True/False] [model=xxx] [prompt="..."]`**  
+     Summarize a tweet or thread.  
+     - By default, `parse_comments=False` (no replies).
+     - Add `parse_comments=True` to include replies.  
+
+     **Minimal Example**:
+     ```
+     /generate_tweet_summary https://twitter.com/LidoFinance/status/123456789
+     ```
+     **Custom Example**:
+     ```
+     /generate_tweet_summary https://twitter.com/LidoFinance/status/123456789 parse_comments=True model=gpt-4.5-preview prompt="Summarize the tweets and then also summarize the sentiment from the comments."
+     ```
+
+   - **`/generate_twitter_digest [timeframe=1d/2d] [relevancy_filter=True/False]`**  
+     Summarize tweets from a list of pre-configured Twitter accounts, grouped by category with links in a “legend.” Please note that due to the rate limits, this can take multiple hours, depending on the number of accounts tracked.
+     - The default `timeframe` is `1d`.
+     - The default `relevancy_filter` is `True`.
+
+     **Minimal Example**:
+     ```
+     /generate_twitter_digest
+     ```
+     **Custom Example**:
+     ```
+     /generate_twitter_digest timeframe=2d relevancy_filter=False
+     ```
+
+   - **`/generate_twitter_account_summary <username> [timeframe=...] [model=xxx] [prompt="..."]`**  
+     Summarize all tweets from a specific user during the specified timeframe.  
+     - Default timeframe is `1d`.
+
+     **Minimal Example**:
+     ```
+     /generate_twitter_account_summary LidoFinance
+     ```
+     **Custom Example**:
+     ```
+     /generate_twitter_account_summary LidoFinance timeframe=7d model=gpt-3.5-turbo prompt="Give me a concise, day-by-day summary"
+     ```
+
+   - **`/generate_gov_digest [timeframe=1d/2d/7d/etc] [relevancy_filter=True/False]`**  
+     Summaries of multiple crypto governance forums  
+     - Default timeframe is `1d`.
+     - Default relevancy filter is `True`.
+
+     **Minimal Example**:
+     ```
+     /generate_gov_digest
+     ```
+     **Custom Example**:
+     ```
+     /generate_gov_digest timeframe=3d relevancy_filter=True
+     ```
+
+---
+
+### Telegram Usage
+
+1. **Unlock the Bot**  
+   - In a **Telegram** chat (private or group), enter:
+     ```
+     /password <BOT_PASSWORD>
+     ```
+     This unlocks commands in that chat. `<BOT_PASSWORD>` must match your `.env`.
+
+2. **Commands & Examples**  
+   All parameters are optional unless otherwise noted. If you leave them out, default values from `.env` or the code are used.
+
+   - **`/generate_summary <url> [model=...] [prompt="..."]`**  
+     Summarize any URL (article, PDF, tweet, Twitter Space, YouTube).  
+     **Minimal Example**:
+     ```
+     /generate_summary https://example.com/some_report.pdf
+     ```
+     **Custom Example**:
+     ```
+     /generate_summary https://example.com/some_report.pdf model=gpt-4.5-preview prompt="Please give a concise 200-word summary"
+     ```
+
+   - **`/generate_tweet_summary <tweet_url> [parse_comments=...] [model=...] [prompt="..."]`**  
+     Summarize a tweet or thread, optionally including comments.  
+     - Default `parse_comments=False`.
+
+     **Minimal Example**:
+     ```
+     /generate_tweet_summary https://x.com/LidoFinance/status/1899476896909345019
+     ```
+     **Custom Example**:
+     ```
+     /generate_tweet_summary https://x.com/LidoFinance/status/1899476896909345019 parse_comments=True model=gpt-4.5-preview prompt="Please generate a summary for these tweets in 100 words or less, while also extracting the community feedback from the comments."
+     ```
+
+   - **`/generate_twitter_account_summary <username> [timeframe=...] [model=...] [prompt="..."]`**  
+     Summarize tweets for a single user in a specific timeframe (default: `1d`).
+     **Minimal Example**:
+     ```
+     /generate_twitter_account_summary LidoFinance
+     ```
+     **Custom Example**:
+     ```
+     /generate_twitter_account_summary LidoFinance 7d model=gpt-4.5-preview prompt="Please summarize these tweets and extract the most interesting URLs separately."
+     ```
+
+   - **`/generate_twitter_digest [timeframe=...] [relevancy_filter=...]`**  
+     Summarize multiple pre-configured Twitter accounts.  
+     - Default `timeframe=1d`, `relevancy_filter=True`.
+     **Minimal Example**:
+     ```
+     /generate_twitter_digest
+     ```
+     **Custom Example**:
+     ```
+     /generate_twitter_digest timeframe=1d relevancy_filter=False
+     ```
+
+   - **`/generate_gov_digest [timeframe=...] [relevancy_filter=...]`**  
+     Summaries of multiple governance forums.  
+     **Minimal Example**:
+     ```
+     /generate_gov_digest
+     ```
+     **Custom Example**:
+     ```
+     /generate_gov_digest timeframe=2d relevancy_filter=False
+     ```
+
+3. **Auto-Detection**  
+   - In group chats, if you post a tweet link, the bot can detect and summarize it automatically, provided the chat is already unlocked with `/password`.
+
+---
+
+## Notion Integration
+
+1. **Create** a Notion integration: [docs](https://developers.notion.com/docs/create-a-notion-integration#create-your-integration-in-notion).  
+2. **Add** the integration to your desired Notion database. 
+3. **Set** in `.env`:
+   ```bash
+   NOTION_KEY=secret_abc123
+   NOTION_DATABASE_ID=xxxx...
+   NOTION_FULL_SUMMARY_PARENT_ID=xxxx...
+4. When you receive a summary, use the **Send to Notion** button in Discord or Telegram.
+
+3. **Auto-Detection**  
+   In group chats, if you drop a tweet link, the bot can auto-summarize it if unlocked.
+
+---
+
+## Custom Models and Prompts
+
+- **Custom Model**  
+  - In your `.env`, define a comma-separated list of models, e.g. `OPENAI_MODELS=gpt-4o-mini,gpt-4.5-preview`.  
+  - The default is `OPENAI_DEFAULT_MODEL=gpt-4o-mini`.  
+  - Override via `model=` parameter in commands.
+
+- **Custom Prompt**  
+  - Pass a custom prompt that overrides the built-in summarization logic:
+    ```
+    e.g.: /generate_summary <url> model=gpt-4.5-preview prompt="Summarize this in Shakespearean style"
+    ```
+  - The raw text is appended to your prompt, and the model follows your instructions.
 
 ----------
 
-### Folder Structure
-```
-beachPatrol/
-└── src/
-    ├── config.py                 # Configuration settings and environment variables
-    ├── core/
-    │   ├── core.py               # Summarization & models
-    │   └── prompts.py            # Prompts for generating the summaries
-    ├── extractors/
-    │   ├── article_extractor.py      # Article/PDFs logic
-    │   ├── governance_extractor.py   # Governance forums logic
-    │   ├── twitter/                  # Twitter-related logic
-    │   │   ├── spaces_extractor.py   # Twitter Spaces logic
-    │   │   ├── digest_extractor.py   # Multi-user Twitter digest logic
-    │   │   └── account_extractor.py  # Single-user Twitter account summary logic
-    │   └── youtube_extractor.py      # YouTube audio logic
-    ├── interface/
-    │   └── discord_app.py          # Main Discord bot code (slash commands, task loops)
-    ├── tasks/
-    │   ├── celery_config.py        # Celery configuration
-    │   ├── monitor.py              # Periodic checks (e.g., for Twitter Spaces)
-    │   └── worker.py               # Celery task definitions
-    └── core/
-        └── utils.py                # Utility functions and persistent views
-```
-----------
-
-### Solution Design
+## Solution Design
 
 **beachPatrol** is architected to efficiently process and summarize diverse content sources, Here's an overview of the solution's design:
 
-1. **Discord Bot**:
-    - Utilizes the `discord.py` library to interact with the Discord API.
-    - Listens for slash commands and enqueues tasks to Celery workers via Redis.
-    - Posts summaries back to Discord using paginated embeds with interactive buttons. This help with message limits in Discord, while also offerring a friendly UX for this use-case.
+1. **Discord Bot**  
+   - Utilizes the `discord.py` library to provide slash commands and interactive embeds.  
+   - Commands are forwarded as Celery tasks, storing intermediate data in Redis.  
+   - Summaries are returned as paginated embeds, with buttons for navigating multiple pages of output.  
+   - A password (`BOT_PASSWORD`) is required to unlock commands on each server, preventing unauthorized use.
 
-2. **Celery Workers**:
-    - Handle the heavy lifting of scraping, transcribing, and summarizing content.
-    - Communicates with Redis for task queuing and result storage.
+2. **Telegram Bot**  
+   - Uses `python-telegram-bot` to handle commands in Telegram chats or groups.  
+   - Similar to Discord, commands and messages are converted into Celery tasks and stored in Redis.  
+   - Results are sent back via paginated messages that persist across restarts.  
+   - Also requires `/password <BOT_PASSWORD>` to unlock commands in each chat.
 
-3. **Redis**:
-    - Serves as both the message broker for Celery and a storage for persistent state.
-    - Stores task queues, results, and state information for paginated views to ensure persistence across bot restarts. This means that even though the bot is restarted, the previous messages and views are repopulated.
-    - When a summary is posted, its state is saved in Redis, including the message ID and channel ID.
-    - On bot startup, existing summaries are reloaded from Redis, and views are reattached to the original Discord messages to maintain interactivity.
+3. **Celery Workers**  
+   - Perform all heavy lifting (scraping, downloading, transcription, summarization).  
+   - Submits and retrieves tasks from Redis (the broker & state store).  
 
-4. **AI Summarization**:
-    - Leverages various OpenAI models to generate executive summaries and detailed notes.
-    - Differentiates between media types to apply appropriate summarization prompts and models.
+4. **Redis**  
+   - Acts as both a **message broker** for Celery tasks and a **persistent store** for summary states (e.g., paginated views).  
+   - When new content is summarized, the Celery worker returns results to Redis, which the bots retrieve for final posting.  
+   - On restart, existing summary states are reloaded so interactive embeds in both Telegram and Discord can be re-hydrated.
 
-5. **Paginated Embeds**:
-    - Results are displayed in Discord as paginated embeds with navigation buttons, which have unique `custom_id`s to ensure persistent views across bot restarts.
-    - State (such as the current page index) is stored in Redis.
+5. **AI Summarization**  
+   - Multiple OpenAI models can be used (GPT-3.5, GPT-4, etc.), or custom prompts can override the default prompts.  
+   - Summaries are generated differently depending on the media type (article, PDF, Twitter Space, YouTube, tweet, etc.).  
+   - Supports both an “executive summary” (short and focused) and a more detailed summary.
+
+6. **Paginated Output & Persistent Views**  
+   - Long-form text is chunked across multiple pages, either as Discord embeds or Telegram messages with inline “Next/Prev” buttons.  
+   - Each page includes navigation controls for easy reading.  
+   - Redis stores the current page index and associated message IDs, so these views remain interactive across bot restarts.
+
+7. **Notion Integration**  
+   - Summaries can optionally be sent to a specified Notion database, using a Notion integration token.  
+   - A single button in the summary message (`“Send to Notion”`) lets users publish the executive and full summaries directly.
+
+8. **Docker-Based Deployment**  
+   - All components—Celery worker, Redis, Discord bot, and Telegram bot—can be containerized via Docker Compose.  
+   - The `.env` file defines credentials (Discord, Telegram tokens), DB connections, password, and any custom environment variables.
 
 ----------
 

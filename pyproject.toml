@@ -20,13 +20,16 @@ celery = "^5.3.4"
 redis = "^5.0.1"
 beautifulsoup4 = "^4.12.3"
 pytube = "^15.0.0"
-yt-dlp = "^2024.8.6"
+yt-dlp = "^2025.2.19"
 newspaper4k = "^0.9.3.1"
 lxml = {extras = ["html-clean"], version = "^5.3.0"}
 nltk = "3.9"
 pymupdf = "^1.24.10"
 py-cord = "^2.6.1"
 tweety-ns = {url = "https://github.com/mahrtayyab/tweety/archive/refs/heads/main.zip"}
+python-telegram-bot = "^21.10"
+notion-client = "^2.3.0"
+md2notion = "^2.4.1"
 
 
 [build-system]
