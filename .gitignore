@@ -18,3 +18,4 @@ governance_forums.json
 /src/core/integrations/__pycache__
 content_tags.json
 *.pyc
+proxies.csv

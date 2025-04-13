@@ -1,14 +1,16 @@
 import os
 import io
+import logging_config
 import logging
 import json
 import re
 from datetime import date, datetime, timezone
 from functools import partial
 import redis
+import asyncio
 
 from config import TG_BOT_TOKEN, OPENAI_MODELS_LIST, OPENAI_MODEL, BOT_PASSWORD, TG_ECOSYSTEM_UPDATES_GROUPID, REDIS_HOST, REDIS_PORT
-from core.utils import chunk_text, PersistentPaginatedMessage
+from core.utils import html_aware_chunk_text, safe_telegram_html, PersistentPaginatedMessage
 from core.integrations.notion_integration import send_tracked_content
 from core.core import format_for_telegram, get_content_tags
 from telegram import Update, BotCommand, InputFile
@@ -22,6 +24,8 @@ from telegram.ext import (
     filters
 )
 
+from metrics.exporter import track_http, track_interaction
+
 from tasks.celery_config import app as celery_app
 from core.integrations.notion_integration import send_tracked_content
 from core.media_configs import (
@@ -32,9 +36,6 @@ from core.media_configs import (
     get_telegram_media_slug
 )
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
 logger = logging.getLogger(__name__)
 
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -105,6 +106,7 @@ def parse_arg_pairs(args_list):
 def is_chat_authorized(chat_id: int) -> bool:
     return r.sismember("authorized_telegram_chats", str(chat_id))
 
+@track_http("tg_unlock")
 async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /password <BOT_PASSWORD>
@@ -121,7 +123,7 @@ async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Incorrect password. Please try again.")
 
-
+@track_http("tg_start")
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     welcome_text = (
@@ -138,6 +140,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode=None)
 
+@track_http("tg_ping")
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /ping command."""
     if not is_chat_authorized(update.effective_chat.id):
@@ -146,6 +149,7 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Pong! 🏓", parse_mode=None)
 
+@track_http("tg_listmodels")
 async def list_available_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /list_available_models
@@ -167,6 +171,7 @@ async def list_available_models(update: Update, context: ContextTypes.DEFAULT_TY
             msg += f"- {m.strip()}\n"
     await update.message.reply_text(msg, parse_mode=None)
 
+@track_http("tg_generate_summary")
 async def generate_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /generate_summary <url> [model=xxx] [prompt="..."]
@@ -245,6 +250,7 @@ async def generate_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "url": url
     }
 
+@track_http("tg_generate_tweet_summary")
 async def generate_tweet_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /generate_tweet_summary <tweet_url> [parse_comments=True|False] [model=xxx] [prompt="..."]
@@ -296,6 +302,7 @@ async def generate_tweet_summary(update: Update, context: ContextTypes.DEFAULT_T
         "parse_comments": parse_comments
     }
 
+@track_http("tg_generate_gov_digest")
 async def generate_gov_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /generate_gov_digest [timeframe] [relevancy_filter]
@@ -327,6 +334,7 @@ async def generate_gov_digest(update: Update, context: ContextTypes.DEFAULT_TYPE
         "command_type": "governance_forum"
     }
 
+@track_http("tg_generate_twitter_digest")
 async def generate_twitter_digest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /generate_twitter_digest [timeframe] [relevancy_filter]
@@ -358,6 +366,7 @@ async def generate_twitter_digest(update: Update, context: ContextTypes.DEFAULT_
         "command_type": "twitter_digest"
     }
 
+@track_http("tg_generate_twitter_account_summary")
 async def generate_twitter_account_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /generate_twitter_account_summary <username> [timeframe] [model=xxx] [prompt="..."]
@@ -451,17 +460,22 @@ async def check_pending_tasks(context: ContextTypes.DEFAULT_TYPE):
                 if custom_prompt_used:
                     disclaimers = ""
 
-                telegram_exec_sum = format_for_telegram(exec_sum or "")
-                telegram_notes = format_for_telegram(notes or "")
+                # Offload the formatting calls to a thread
+                telegram_exec_sum = await asyncio.to_thread(format_for_telegram, exec_sum or "")
+                telegram_notes = await asyncio.to_thread(format_for_telegram, notes or "")
+
+                # Continue with synchronous processing for small string operations:
                 telegram_exec_sum = telegram_exec_sum.replace("```html", "").replace("```", "")
                 telegram_notes = telegram_notes.replace("```html", "").replace("```", "")
-
                 first_page_text = telegram_exec_sum.strip()
                 if disclaimers.strip():
                     first_page_text += "\n\n" + disclaimers.strip()
+                first_page_text = safe_telegram_html(first_page_text)
+                telegram_notes = safe_telegram_html(telegram_notes)
 
-                first_chunks = chunk_text(first_page_text, limit=3846)
-                notes_pages = chunk_text(telegram_notes, limit=3846)
+                # Offload heavy HTML chunking as well
+                first_chunks = await asyncio.to_thread(html_aware_chunk_text, first_page_text, 3846)
+                notes_pages = await asyncio.to_thread(html_aware_chunk_text, telegram_notes, 3846)
                 pages = first_chunks + notes_pages
 
                 report_date = date.today().strftime("%Y-%m-%d")
@@ -502,6 +516,7 @@ async def check_pending_tasks(context: ContextTypes.DEFAULT_TYPE):
     for job_id in finished_jobs:
         del telegram_tasks[job_id]
 
+@track_interaction("tg_pagination_interaction")
 async def persistent_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles callback queries for persistent pagination.

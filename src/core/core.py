@@ -8,9 +8,13 @@ from config import (
 )
 from core.prompts import PromptManager
 from langchain.schema import Document, HumanMessage
-from langchain.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.chains.summarize import load_summarize_chain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 openai.api_key = OPENAI_API_KEY
 
@@ -26,8 +30,8 @@ def get_valid_model(model_candidate: str) -> str:
     return OPENAI_MODEL
 
 def query_openai(prompt):
-    llm = ChatOpenAI(temperature=0, model_name=OPENAI_MODEL)
-    response = llm([HumanMessage(content=prompt)])
+    llm = ChatOpenAI(temperature=0, model=OPENAI_MODEL)
+    response = llm.invoke([HumanMessage(content=prompt)])
     return response.content.strip()
 
 def do_custom_prompt(full_text: str, user_prompt: str, model: str) -> str:
@@ -37,14 +41,14 @@ def do_custom_prompt(full_text: str, user_prompt: str, model: str) -> str:
     Returns the entire response as a single string.
     """
     model_used = get_valid_model(model)
-    llm = ChatOpenAI(temperature=0, model_name=model_used)
+    llm = ChatOpenAI(temperature=0, model=model_used)
     # We simply combine everything into a single message:
     combined_prompt = (
         f"{user_prompt}\n\n"
         f"Raw content:\n\n{full_text}\n\n"
         f"Please follow only the user's prompt above for that raw content."
     )
-    response = llm([HumanMessage(content=combined_prompt)])
+    response = llm.invoke([HumanMessage(content=combined_prompt)])
     return response.content.strip()
 
 def _get_model_for_media_type(media_type: str) -> str:
@@ -87,7 +91,11 @@ def categorize_governance_topic(topic_full_text: str) -> str:
         category_line = answer.splitlines()[0].strip()
         return category_line
     except Exception as e:
-        print(f"[categorize_governance_topic] Error: {e}")
+        logger.error(
+            "Error categorizing governance topic",
+            extra={"topic_length": len(topic_full_text)},
+            exc_info=True
+        )
         return "Misc. 🌀"
 
 def check_tweet_relevance(tweet_text: str) -> bool:
@@ -100,7 +108,11 @@ def check_tweet_relevance(tweet_text: str) -> bool:
         answer = query_openai(content).lower()
         return "yes" in answer
     except Exception as e:
-        print(f"[check_tweet_relevance] Error: {e}")
+        logger.error(
+            "Error checking tweet relevance",
+            extra={"tweet_text": tweet_text},
+            exc_info=True
+        )
         return False
 
 def summarize_transcript(transcript, media_type="article"):
@@ -116,7 +128,7 @@ def summarize_transcript(transcript, media_type="article"):
         )
         docs = text_splitter.split_documents([doc])
         question_prompt, refine_prompt = PromptManager.get_summary_prompts(media_type)
-        llm = ChatOpenAI(temperature=0, model_name=used_model)
+        llm = ChatOpenAI(temperature=0, model=used_model)
         chain = load_summarize_chain(
             llm,
             chain_type="refine",
@@ -126,10 +138,14 @@ def summarize_transcript(transcript, media_type="article"):
             input_key="input_documents",
             output_key="output_text"
         )
-        result = chain({"input_documents": docs}, return_only_outputs=True)
+        result = chain.invoke({"input_documents": docs}, return_only_outputs=True)
         return result["output_text"]
     except Exception as e:
-        print(f"Error summarizing transcript: {e}")
+        logger.error(
+            "Error summarizing transcript",
+            extra={"media_type": media_type},
+            exc_info=True
+        )
         return "Error summarizing transcript"
 
 def get_executive_summary(summary, media_type="article"):
@@ -146,7 +162,7 @@ def get_executive_summary(summary, media_type="article"):
         )
         docs = text_splitter.split_documents([doc])
         question_prompt, refine_prompt = PromptManager.get_executive_prompts(media_type)
-        llm = ChatOpenAI(temperature=0, model_name=used_model)
+        llm = ChatOpenAI(temperature=0, model=used_model)
         chain = load_summarize_chain(
             llm,
             chain_type="refine",
@@ -156,10 +172,14 @@ def get_executive_summary(summary, media_type="article"):
             input_key="input_documents",
             output_key="output_text"
         )
-        result = chain({"input_documents": docs}, return_only_outputs=True)
+        result = chain.invoke({"input_documents": docs}, return_only_outputs=True)
         return result["output_text"]
     except Exception as e:
-        print(f"Error generating executive summary: {e}")
+        logger.error(
+            "Error generating executive summary",
+            extra={"media_type": media_type},
+            exc_info=True
+        )
         return "Error generating executive summary"
 
 def escape_markdown_v2(text: str) -> str:
@@ -204,5 +224,9 @@ def get_content_tags(full_text: str, media_type: str) -> list:
                     break
         return final_tags
     except Exception as e:
-        print(f"[get_content_tags] Error: {e}")
+        logger.error(
+            "Error getting content tags",
+            extra={"media_type": media_type},
+            exc_info=True
+        )
         return []

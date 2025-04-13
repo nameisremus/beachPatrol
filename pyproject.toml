@@ -5,32 +5,38 @@ description = "A discord bot that patrols the beach."
 authors = ["Drew&Pate <drew@lido.fi>"]
 readme = "README.md"
 packages = [
-    { include = "beachPatrol", from = "src" }
+  { include = "commands",       from = "src" },
+  { include = "extractors",     from = "src" },
+  { include = "core",           from = "src" },
+  { include = "tasks",          from = "src" },
+  { include = "interface",      from = "src" },
+  { include = "config.py",      from = "src" }
 ]
 
 
 [tool.poetry.dependencies]
 python = "^3.11"
-twspace-dl = "^2023.7.24.1"
-openai = "^0.28.1"
-langchain = "^0.0.306"
-python-dotenv = "^1.0.0"
-tiktoken = "^0.5.1"
-celery = "^5.3.4"
-redis = "^5.0.1"
-beautifulsoup4 = "^4.12.3"
-pytube = "^15.0.0"
-yt-dlp = "^2025.2.19"
+openai = "^1.82.0"
+langchain = "^0.3.25"
+langchain-community = "^0.3.24"
+langchain-openai = "^0.3.18"
+python-dotenv = "^1.1.0"
+celery = "^5.5.2"
+redis = "^6.1.0"
+beautifulsoup4 = "^4.13.4"
+yt-dlp = "^2025.5.22"
 newspaper4k = "^0.9.3.1"
-lxml = {extras = ["html-clean"], version = "^5.3.0"}
-nltk = "3.9"
-pymupdf = "^1.24.10"
-py-cord = "^2.6.1"
-tweety-ns = {url = "https://github.com/mahrtayyab/tweety/archive/refs/heads/main.zip"}
-python-telegram-bot = "^21.10"
+pymupdf = "^1.26.0"
+python-telegram-bot = {extras = ["job-queue"], version = "^22.1"}
 notion-client = "^2.3.0"
-md2notion = "^2.4.1"
+tweety-ns = "^2.3"
+discord-py = "^2.5.2"
+lxml-html-clean = "^0.4.2"
+prometheus-client = "^0.22.0"
 
+
+[tool.poetry.group.dev.dependencies]
+deptry = "^0.23.0"
 
 [build-system]
 requires = ["poetry-core"]

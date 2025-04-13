@@ -1,38 +1,41 @@
 import discord
-from discord.ext import tasks
-from discord import Intents, Option
-from dotenv import load_dotenv
+from discord.ext import tasks, commands
+from discord import Intents, app_commands, Interaction
 import json
 import redis
-
+import logging_config
+import logging
 from datetime import date, datetime, timezone
+
+from metrics.exporter import track_http, track_interaction
 
 from config import (
     DISCORD_TOKEN, DISCORD_CHANNEL_ID, REDIS_HOST, REDIS_PORT,
     OPENAI_MODELS_LIST, OPENAI_MODEL,
-    BOT_PASSWORD
+    BOT_PASSWORD,
+    ENABLE_DISCORD_DIGEST
 )
 from tasks.celery_config import app as celery_app
 from core.utils import chunk_text, PersistentPaginatedEmbedView
 from core.media_configs import MEDIA_CONFIGS, DEFAULT_MEDIA_CONFIG
 from core.core import get_content_tags
 
-load_dotenv()
 
 intents = Intents.default()
 intents.presences = True
-bot = discord.Bot(intents=intents, command_prefix="/")
+bot = commands.Bot(command_prefix="/", intents=intents)
 
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
 tasks_list = []
 
+logger = logging.getLogger(__name__)
 
 def is_guild_authorized(guild_id: int) -> bool:
     return r.sismember("authorized_discord_guilds", str(guild_id))
 
 @bot.event
 async def on_ready():
-    print("Logged in as " + bot.user.name)
+    logger.info("Logged in as %s", bot.user.name)
 
     # Re-register persistent views
     for key_bytes in r.scan_iter("report:*"):
@@ -73,82 +76,123 @@ async def on_ready():
                         view.message = msg
                         await msg.edit(embed=view._get_embed(), view=view)
                     except discord.NotFound:
-                        print(f"Message {message_id} not found in channel {channel_id}")
-                    except Exception as e:
-                        print(f"Error fetching message: {e}")
+                        logger.warning(
+                            "Persistent view message not found",
+                            extra={"message_id": message_id, "channel_id": channel_id}
+                        )
+                    except Exception:
+                        logger.error(
+                            "Error fetching persistent view message",
+                            extra={"message_id": message_id, "channel_id": channel_id},
+                            exc_info=True
+                        )
 
             bot.add_view(view)
-            print(f"Re-registered persistent view for {report_id} with {len(pages)} pages.")
-        except Exception as e:
-            print(f"Error re-initializing persistent view for key {key_str}: {e}")
+            logger.info(
+                "Re-registered persistent view",
+                extra={"report_id": report_id, "num_pages": len(pages)}
+            )
+        except Exception:
+            logger.error(
+                "Error re-initializing persistent view",
+                extra={"key": key_str},
+                exc_info=True
+            )
+
+    # Sync slash commands
+    try:
+        await bot.tree.sync()
+        logger.info("Slash commands synced.")
+    except Exception as e:
+        logger.error("Failed to sync slash commands: %s", e)
 
     # Start the daily scheduled tasks loop for gov and twitter digests
-    daily_scheduled_tasks.start()
-    print("Daily scheduled tasks loop started.")
+    if ENABLE_DISCORD_DIGEST:
+        daily_scheduled_tasks.start()
+        logger.info("Daily scheduled tasks loop started.")
+    else:
+        logger.info("ENABLE_DISCORD_DIGEST = FALSE, skipping daily digests scheduling..")
 
-@bot.slash_command(description="Enter the bot password to unlock commands.")
-async def password(ctx, password: str):
+    # start the persistent background loops
+    if not check_tasks.is_running():
+        check_tasks.start()
+        logger.info("check_tasks loop started.")
+
+    if not check_watchlist_results.is_running():
+        check_watchlist_results.start()
+        logger.info("check_watchlist_results loop started.")
+
+
+@track_http("dc_unlock")
+@bot.tree.command(name="password", description="Enter the bot password to unlock commands.")
+async def password(ctx: Interaction, password: str):
     if password == BOT_PASSWORD:
         r.sadd("authorized_discord_guilds", str(ctx.guild_id))
-        await ctx.respond("✅ Bot commands now unlocked!")
+        await ctx.response.send_message("✅ Bot commands now unlocked!")
     else:
-        await ctx.respond("❌ Incorrect password. Please try again.")
+        await ctx.response.send_message("❌ Incorrect password. Please try again.")
 
-
-@bot.slash_command(description="Check if the bot is responsive.")
-async def ping(ctx):
+@track_http("dc_ping")
+@bot.tree.command(name="ping", description="Check if the bot is responsive.")
+async def ping(ctx: Interaction):
     """
     /ping -> Responds with 'Pong!'.
     """
     if not is_guild_authorized(ctx.guild_id):
-        await ctx.respond("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
+        await ctx.response.send_message("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
         return
 
-    await ctx.respond(f"Pong! 🏓")
+    await ctx.response.send_message(f"Pong! 🏓")
 
-@bot.slash_command(description="List all available models.")
-async def list_available_models(ctx):
+@track_http("dc_list_models")
+@bot.tree.command(name="list_available_models", description="List all available models.")
+async def list_available_models(ctx: Interaction):
     """
     /list_available_models -> Lists the available models
     """
     if not is_guild_authorized(ctx.guild_id):
-        await ctx.respond("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
+        await ctx.response.send_message("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
         return
 
     if not OPENAI_MODELS_LIST or not any(m.strip() for m in OPENAI_MODELS_LIST):
-        await ctx.respond("No models available (OPENAI_MODELS is empty).")
+        await ctx.response.send_message("No models available (OPENAI_MODELS is empty).")
         return
     msg = "**Available Models:**\n"
     for m in OPENAI_MODELS_LIST:
         if m.strip():
             msg += f"- {m.strip()}\n"
-    await ctx.respond(msg)
+    await ctx.response.send_message(msg)
 
-@bot.slash_command()
+@track_http("dc_generate_summary")
+@bot.tree.command(name="generate_summary", description="Summarize the URL, optionally override model and prompt.")
+@app_commands.describe(
+    url="URL to summarize",
+    model="OpenAI model to use (optional)",
+    prompt="Custom prompt instead of default",
+)
 async def generate_summary(
-    ctx,
-    url: Option(str, "URL to summarize"), # type: ignore
-    model: Option(str, "OpenAI model to use (optional)", default=None),  # type: ignore
-    prompt: Option(str, "Custom prompt instead of default", default=None)  # type: ignore
+    ctx: Interaction,
+    url: str,
+    model: str | None = None,
+    prompt: str | None = None,
 ):
     """
     /generate_summary <url> -> Summarize the URL, optionally override model and prompt.
     """
     if not is_guild_authorized(ctx.guild_id):
-        await ctx.respond("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
+        await ctx.response.send_message("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
         return
 
+    await ctx.response.send_message(f"Processing URL {url} ... please wait")
     if "twitter.com/i/spaces" in url or "x.com/i/spaces" in url:
-        await ctx.respond(f"Processing Twitter Space URL {url} ... please wait")
         job = celery_app.send_task("worker.scrape_space", args=[url], kwargs={"model": model, "prompt": prompt})
         tasks_list.append((job, ctx, "twitter_space", None, 0, url))
 
     elif "youtube.com/watch" in url or "youtu.be" in url:
-        await ctx.respond(f"Processing YouTube URL {url} ... please wait")
         job = celery_app.send_task("worker.scrape_youtube_video", args=[url], kwargs={"model": model, "prompt": prompt})
         tasks_list.append((job, ctx, "youtube", None, 0, url))
+
     elif ("twitter.com/" in url or "x.com/" in url) and "/status/" in url:
-        await ctx.respond(f"Processing tweet summary for URL {url} ... please wait")
         job = celery_app.send_task("worker.scrape_tweet_summary", kwargs={
             "url": url,
             "parse_comments": False,
@@ -157,15 +201,19 @@ async def generate_summary(
         })
         tasks_list.append((job, ctx, "tweet_summary", None, 0, url))
     else:
-        await ctx.respond(f"Processing URL {url} ... please wait")
         job = celery_app.send_task("worker.scrape_article", args=[url], kwargs={"model": model, "prompt": prompt})
         tasks_list.append((job, ctx, "article", None, 0, url))
 
-@bot.slash_command(description="Manually run governance forum scraping")
+@track_http("dc_generate_gov_digest")
+@bot.tree.command(name="generate_gov_digest", description="Manually run governance forum scraping")
+@app_commands.describe(
+    timeframe="Timeframe for topics, e.g. 1d, 2d etc.",
+    relevancy_filter="Only relevant topics?"
+)
 async def generate_gov_digest(
-    ctx,
-    timeframe: Option(str, "Timeframe for topics, e.g. 1d, 2d etc.", default="1d"),  # type: ignore
-    relevancy_filter: Option(bool, "Only relevant topics?", default=True)  # type: ignore
+    ctx: Interaction,
+    timeframe: str = "1d",
+    relevancy_filter: bool = True
 ):
     """
     /generate_gov_digest [timeframe=7d] [relevancy_filter=True]
@@ -174,13 +222,13 @@ async def generate_gov_digest(
         relevancy_filter (bool): True/False - if you only want topics relevant to Lido/LSTs/Eco/ETH
     """
     if not is_guild_authorized(ctx.guild_id):
-        await ctx.respond("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
+        await ctx.response.send_message("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
         return
 
-    original_msg = await ctx.respond(
+    await ctx.response.send_message(
         f"Processing governance forum updates... timeframe={timeframe}, relevancyFilter={relevancy_filter}"
     )
-    sent_msg = await ctx.interaction.original_response()
+    sent_msg = await ctx.original_response()
 
     job = celery_app.send_task(
         "worker.scrape_governance_forum",
@@ -188,29 +236,35 @@ async def generate_gov_digest(
     )
     tasks_list.append((job, ctx, "governance_forum", sent_msg.id, 0, ""))
 
-@bot.slash_command(description="Run a Twitter digest for multiple accounts.")
+@track_http("dc_generate_twitter_digest")
+@bot.tree.command(name="generate_twitter_digest", description="Run a Twitter digest for multiple accounts.")
+@app_commands.describe(
+    timeframe="Timeframe for tweets (1d or 2d)",
+    relevancy_filter="Only relevant tweets?"
+)
 async def generate_twitter_digest(
-    ctx,
-    timeframe: Option(str, "Timeframe for tweets (1d or 2d)", default="1d"),  # type: ignore
-    relevancy_filter: Option(bool, "Only relevant tweets?", default=True)  # type: ignore
+    ctx: Interaction,
+    timeframe: str = "1d",
+    relevancy_filter: bool = True
 ):
     """
     /generate_twitter_digest [timeframe=1d or 2d] [relevancy_filter=True]
     Gathers tweets from the configured usernames, optionally filtering for Lido/ETH relevancy.
     """
     if not is_guild_authorized(ctx.guild_id):
-        await ctx.respond("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
+        await ctx.response.send_message("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
         return
 
     if timeframe not in ("1d", "2d"):
-        await ctx.respond(
+        await ctx.response.send_message(
             "Due to Twitter rate limits, the timeframe can only be **1d** or **2d**."
         )
         return
-    original_msg = await ctx.respond(
+
+    await ctx.response.send_message(
         f"Processing Twitter digest... timeframe={timeframe}, relevancyFilter={relevancy_filter}"
     )
-    sent_msg = await ctx.interaction.original_response()
+    sent_msg = await ctx.original_response()
 
     job = celery_app.send_task(
         "worker.scrape_twitter_digest",
@@ -218,22 +272,29 @@ async def generate_twitter_digest(
     )
     tasks_list.append((job, ctx, "twitter_digest", sent_msg.id, 0, ""))
 
-@bot.slash_command(description="Summarize tweets for one user, optional timeframe.")
+@track_http("dc_generate_twitter_account_summary")
+@bot.tree.command(name="generate_twitter_account_summary", description="Summarize tweets for one user, optional timeframe.")
+@app_commands.describe(
+    username="Twitter username (no @)",
+    timeframe="Timeframe, e.g. 1d",
+    model="OpenAI model to use (optional)",
+    prompt="Custom prompt instead of default"
+)
 async def generate_twitter_account_summary(
-    ctx,
-    username: Option(str, "Twitter username (no @)", default="elonmusk"),  # type: ignore
-    timeframe: Option(str, "Timeframe, e.g. 1d", default="1d"),  # type: ignore
-    model: Option(str, "OpenAI model to use (optional)", default=None),  # type: ignore
-    prompt: Option(str, "Custom prompt instead of default", default=None)  # type: ignore
+    ctx: Interaction,
+    username: str = "elonmusk",
+    timeframe: str = "1d",
+    model: str | None = None,
+    prompt: str | None = None
 ):
     if not is_guild_authorized(ctx.guild_id):
-        await ctx.respond("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
+        await ctx.response.send_message("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
         return
 
-    original_msg = await ctx.respond(
+    await ctx.response.send_message(
         f"Processing Twitter summary for @{username}, timeframe={timeframe}..."
     )
-    sent_msg = await ctx.interaction.original_response()
+    sent_msg = await ctx.original_response()
 
     job = celery_app.send_task(
         "worker.scrape_twitter_account_summary",
@@ -241,22 +302,29 @@ async def generate_twitter_account_summary(
     )
     tasks_list.append((job, ctx, "single_twitter_account", sent_msg.id, 0, ""))
 
-@bot.slash_command(description="Summarize a tweet (or thread) with optional parsing of comments.")
+@track_http("dc_generate_tweet_summary")
+@bot.tree.command(name="generate_tweet_summary", description="Summarize a tweet (or thread) with optional parsing of comments.")
+@app_commands.describe(
+    url="Tweet URL",
+    parse_comments="Parse tweet comments?",
+    model="OpenAI model to use (optional)",
+    prompt="Custom prompt instead of default"
+)
 async def generate_tweet_summary(
-    ctx,
-    url: Option(str, "Tweet URL"), # type: ignore
-    parse_comments: Option(bool, "Parse tweet comments?", default=False),  # type: ignore
-    model: Option(str, "OpenAI model to use (optional)", default=None),  # type: ignore
-    prompt: Option(str, "Custom prompt instead of default", default=None)  # type: ignore
+    ctx: Interaction,
+    url: str,
+    parse_comments: bool = False,
+    model: str | None = None,
+    prompt: str | None = None
 ):
     if not is_guild_authorized(ctx.guild_id):
-        await ctx.respond("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
+        await ctx.response.send_message("This server must be unlocked first. Use `/password <BOT_PASSWORD>`.")
         return
 
-    original_msg = await ctx.respond(
+    await ctx.response.send_message(
         f"Processing tweet summary for URL {url}, parse_comments={parse_comments}..."
     )
-    sent_msg = await ctx.interaction.original_response()
+    sent_msg = await ctx.original_response()
 
     job = celery_app.send_task(
         "worker.scrape_tweet_summary",
@@ -289,7 +357,10 @@ async def check_tasks():
                         msg_to_edit = await channel.fetch_message(msg_id)
                         await msg_to_edit.edit(content=str(result) or "No updates.")
                     except Exception:
-                        pass
+                        logger.error(
+                            "Error editing final message in check_tasks",
+                            exc_info=True
+                        )
                     await ctx.channel.send(str(result))
                 else:
                     channel = bot.get_channel(DISCORD_CHANNEL_ID)
@@ -309,8 +380,11 @@ async def check_tasks():
                         channel = ctx.channel
                         msg_to_edit = await channel.fetch_message(msg_id)
                         await msg_to_edit.edit(content=f"Processing {media_type} finished!\nCommand processed.")
-                    except Exception as e:
-                        print(f"[check_tasks] Error editing final message: {e}")
+                    except Exception:
+                        logger.error(
+                            "Error editing final message for dict result",
+                            exc_info=True
+                        )
 
                 config = MEDIA_CONFIGS.get(media_type, DEFAULT_MEDIA_CONFIG)
                 base_title = config["base_title"]
@@ -329,8 +403,7 @@ async def check_tasks():
 
                 report_date = date.today().strftime("%Y-%m-%d")
                 unique_id = job.id or "nojobid"
-                report_id = f"{media_type}_{report_date}_{unique_id}"
-                report_id = report_id[:50]
+                report_id = f"{media_type}_{report_date}_{unique_id}"[:50]
 
                 view = PersistentPaginatedEmbedView(
                     report_id=report_id,
@@ -392,7 +465,7 @@ async def check_tasks():
                 # old style (exec_sum, notes) => fallback
                 try:
                     exec_sum, notes = result
-                except Exception as e:
+                except Exception:
                     if ctx:
                         await ctx.channel.send(str(result))
                     else:
@@ -407,8 +480,11 @@ async def check_tasks():
                         channel = ctx.channel
                         msg_to_edit = await channel.fetch_message(msg_id)
                         await msg_to_edit.edit(content=f"Processing {media_type} finished!\nCommand processed.")
-                    except Exception as e:
-                        print(f"[check_tasks] Error editing final message: {e}")
+                    except Exception:
+                        logger.error(
+                            "Error editing final message for tuple result",
+                            exc_info=True
+                        )
 
                 config = MEDIA_CONFIGS.get(media_type, DEFAULT_MEDIA_CONFIG)
                 base_title = config["base_title"]
@@ -421,8 +497,7 @@ async def check_tasks():
 
                 report_date = date.today().strftime("%Y-%m-%d")
                 unique_id = job.id or "nojobid"
-                report_id = f"{media_type}_{report_date}_{unique_id}"
-                report_id = report_id[:50]
+                report_id = f"{media_type}_{report_date}_{unique_id}"[:50]
 
                 view = PersistentPaginatedEmbedView(
                     report_id=report_id,
@@ -493,18 +568,24 @@ async def check_tasks():
                             try:
                                 msg_to_edit = await channel.fetch_message(msg_id)
                                 await msg_to_edit.edit(content=new_content)
-                            except Exception as e:
-                                print(f"[check_tasks] Error editing message: {e}")
+                            except Exception:
+                                logger.error(
+                                    "Error editing progress message in check_tasks",
+                                    exc_info=True
+                                )
                         idx = tasks_list.index((job, ctx, media_type, msg_id, last_count, url_for_content))
                         tasks_list[idx] = (job, ctx, media_type, msg_id, processed, url_for_content)
-            except Exception as e:
-                print(f"[check_tasks] Exception checking task progress: {e}")
+            except Exception:
+                logger.error(
+                    "Exception checking task progress",
+                    exc_info=True
+                )
 
 @tasks.loop(minutes=1)
 async def daily_scheduled_tasks():
     now_utc = datetime.now(timezone.utc)
     if now_utc.hour == 10 and now_utc.minute == 0:
-        print("[daily_scheduled_tasks] It's 10:00 UTC -> scheduling daily govdigest.")
+        logger.info("Scheduling daily governance forum digest")
         job = celery_app.send_task(
             "worker.scrape_governance_forum",
             kwargs={"timeframe": "1d", "only_relevant": True}
@@ -512,7 +593,7 @@ async def daily_scheduled_tasks():
         tasks_list.append((job, None, "governance_forum", None, 0, ""))
 
     if now_utc.hour == 6 and now_utc.minute == 31:
-        print("[daily_scheduled_tasks] It's 07:00 UTC -> scheduling daily twitterdigest.")
+        logger.info("Scheduling daily Twitter digest")
         job2 = celery_app.send_task(
             "worker.scrape_twitter_digest",
             kwargs={"timeframe": "1d", "only_relevant": True}
@@ -521,9 +602,9 @@ async def daily_scheduled_tasks():
 
 @daily_scheduled_tasks.before_loop
 async def before_daily_scheduled_tasks():
-    print("Waiting for bot to get ready before daily_scheduled_tasks loop.")
+    logger.info("Waiting for bot to get ready before daily_scheduled_tasks loop.")
     await bot.wait_until_ready()
-    print("Ready.")
+    logger.info("Daily scheduled tasks loop ready.")
 
 @tasks.loop(seconds=5)
 async def check_watchlist_results():
@@ -533,42 +614,44 @@ async def check_watchlist_results():
     """
     channel = bot.get_channel(DISCORD_CHANNEL_ID)
     for result_bytes in r.lrange("watchlist_results", 0, -1):
-        result_str = result_bytes.decode("utf-8")
-        print(result_str)
-        result_dict = json.loads(result_str)
+        try:
+            result_str = result_bytes.decode("utf-8")
+            logger.info("Watchlist result: %s", result_str)
+            result_dict = json.loads(result_str)
 
-        space_url = result_dict["space_url"]
-        exec_sum = result_dict["exec_sum"] or ""
-        notes = result_dict["notes"] or ""
+            space_url = result_dict["space_url"]
+            exec_sum = result_dict["exec_sum"] or ""
+            notes = result_dict["notes"] or ""
 
-        if channel:
-            combined_text = (
-                f"**Twitter Space**: {space_url}\n\n"
-                f"**Short Summary**:\n{exec_sum}\n\n"
-                f"**Full Summary**:\n{notes}"
-            )
-            pages = chunk_text(combined_text, limit=3846)
-            if len(pages) == 1:
-                embed = discord.Embed(
-                    title="Watchlist Twitter Space",
-                    description=pages[0],
-                    color=0x2F3136
+            if channel:
+                combined_text = (
+                    f"**Twitter Space**: {space_url}\n\n"
+                    f"**Short Summary**:\n{exec_sum}\n\n"
+                    f"**Full Summary**:\n{notes}"
                 )
-                await channel.send(embed=embed)
-            else:
-                for i, chunk in enumerate(pages):
+                pages = chunk_text(combined_text, limit=3846)
+                if len(pages) == 1:
                     embed = discord.Embed(
-                        title=f"Watchlist Twitter Space (page {i+1}/{len(pages)})",
-                        description=chunk,
+                        title="Watchlist Twitter Space",
+                        description=pages[0],
                         color=0x2F3136
                     )
                     await channel.send(embed=embed)
+                else:
+                    for i, chunk in enumerate(pages):
+                        embed = discord.Embed(
+                            title=f"Watchlist Twitter Space (page {i+1}/{len(pages)})",
+                            description=chunk,
+                            color=0x2F3136
+                        )
+                        await channel.send(embed=embed)
 
-        r.lrem("watchlist_results", 1, result_bytes)
+            r.lrem("watchlist_results", 1, result_bytes)
+        except Exception:
+            logger.error(
+                "Error processing watchlist result",
+                exc_info=True
+            )
 
-# Start loops
-check_tasks.start()
-check_watchlist_results.start()
-# daily_scheduled_tasks is started in on_ready()
-
+# Start
 bot.run(DISCORD_TOKEN)

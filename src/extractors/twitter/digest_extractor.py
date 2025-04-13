@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from tweety import Twitter, TwitterAsync
 from tweety.types.twDataTypes import Tweet, SelfThread
 from tweety.types import Proxy, PROXY_TYPE_HTTP
+from .twitter_pool import twitter_pool, is_rate_limit_error
 
 from core.core import (
     summarize_transcript,
@@ -13,17 +14,11 @@ from core.core import (
     check_tweet_relevance,
     get_content_tags
 )
-from config import (
-    OPENAI_API_KEY,
-    TWITTER_ACCOUNTS,
-    TWITTER_ACCOUNTS_DICT,
-    TWITTER_USER,
-    TWITTER_PASSWORD,
-    PROXY_IP,
-    PROXY_PORT,
-    PROXY_USERNAME,
-    PROXY_PASSWORD
-)
+from config import OPENAI_API_KEY, TWITTER_ACCOUNTS, TWITTER_ACCOUNTS_DICT
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 openai.api_key = OPENAI_API_KEY
 
@@ -79,7 +74,27 @@ async def _expand_tweet_and_threads(app: Twitter, tweet: Tweet | SelfThread) -> 
         if tweet.is_retweet and tweet.retweeted_tweet:
             # Expand the original tweet if it's a retweet
             original_tweet = tweet.retweeted_tweet
-            detailed = await app.tweet_detail(original_tweet.id)
+            while True:
+                try:
+                    detailed = await twitter_pool.safe_call(
+                        "tweet_detail", original_tweet.id
+                    )
+                    break
+                except Exception as exc:
+                    if is_rate_limit_error(exc):
+                        await twitter_pool.rate_limit_hit()
+                        continue
+                    logger.error(
+                        "Error fetching retweeted tweet detail",
+                        extra={"original_tweet_id": original_tweet.id},
+                        exc_info=True
+                    )
+                    return {
+                        "expanded_list": expanded,
+                        "retweet_count": retweet_ct,
+                        "normal_count": normal_ct
+                    }
+
             if isinstance(detailed, SelfThread):
                 await detailed.expand()
                 for tw in detailed.tweets:
@@ -105,14 +120,19 @@ async def _fetch_tweets_simple(app: Twitter, screen_name: str, pages: int) -> li
     Excluding replies by default. Returns the raw Tweet objects.
     """
     try:
-        return await app.get_tweets(
-            screen_name,
-            pages=pages,
-            replies=False,
-            wait_time=15
+        # return await app.get_tweets(screen_name, pages=pages, replies=False, wait_time=15)
+        return await twitter_pool.safe_call(
+            "get_tweets", screen_name, pages=pages, replies=False, wait_time=15
         )
-    except Exception as e:
-        print(f"[_fetch_tweets_simple] Error fetching {pages} pages for {screen_name}: {e}")
+    except Exception as exc:
+        if is_rate_limit_error(exc):
+            await twitter_pool.rate_limit_hit()
+            return await _fetch_tweets_simple(app, screen_name, pages)  # retry
+        logger.error(
+            "Error fetching tweets",
+            extra={"screen_name": screen_name, "pages": pages},
+            exc_info=True
+        )
         return []
 
 async def fetch_user_tweets_with_threads(
@@ -207,8 +227,12 @@ async def fetch_user_tweets_with_threads(
                         "screen_name": screen_name,
                         "is_retweet": item["is_retweet"]
                     })
-        except Exception as e:
-            print(f"[fetch_user_tweets_with_threads] Error expanding tweet {raw_tweet.id} for {screen_name}: {e}")
+        except Exception:
+            logger.error(
+                "Error expanding tweet/thread",
+                extra={"screen_name": screen_name, "tweet_id": getattr(raw_tweet, "id", None)},
+                exc_info=True
+            )
             continue
 
     if merged_normal < 0:
@@ -221,7 +245,6 @@ async def fetch_user_tweets_with_threads(
         "normal_count": merged_normal,
         "retweet_count": merged_retweets
     }
-
 
 def _replace_large_headings(text: str) -> str:
     """
@@ -254,17 +277,18 @@ def process_twitter_digest(timeframe: str = "1d", only_relevant: bool = True):
     from celery import current_task
 
     cutoff_dt = datetime.now(timezone.utc) - parse_timeframe(timeframe)
-    print(f"[process_twitter_digest] timeframe={timeframe}, onlyRelevancy={only_relevant}, cutoff={cutoff_dt.isoformat()}")
+    logger.info(
+        "Starting process_twitter_digest",
+        extra={
+            "timeframe": timeframe,
+            "only_relevant": only_relevant,
+            "cutoff": cutoff_dt.isoformat()
+        }
+    )
 
     async def run_async():
         # 1) create Tweety client
-        proxy = Proxy(host=PROXY_IP, port=PROXY_PORT, proxy_type=PROXY_TYPE_HTTP, username=PROXY_USERNAME, password=PROXY_PASSWORD)
-
-        app = TwitterAsync("session", proxy=proxy)
-        if TWITTER_USER and TWITTER_PASSWORD:
-            print(f"[process_twitter_digest] Logging in as {TWITTER_USER}...")
-            await app.sign_in(TWITTER_USER, TWITTER_PASSWORD)
-            print(f"[process_twitter_digest] Logged in user: {app.me}")
+        app = await twitter_pool._client()
 
         summaries = []
 
@@ -301,7 +325,7 @@ def process_twitter_digest(timeframe: str = "1d", only_relevant: bool = True):
             if not username:
                 continue
 
-            print(f"[process_twitter_digest] fetching tweets for @{username}")
+            logger.info("Fetching tweets for account", extra={"username": username})
             # Perform the custom "two-step fetch" approach
             result_dict = await fetch_user_tweets_with_threads(app, username, cutoff_dt)
             all_tweets = result_dict["merged_tweets"]
@@ -435,8 +459,12 @@ def process_twitter_digest(timeframe: str = "1d", only_relevant: bool = True):
     try:
         exec_sum, notes = loop.run_until_complete(run_async())
         return (exec_sum, notes)
-    except Exception as e:
-        print(f"[process_twitter_digest] Error: {e}")
+    except Exception:
+        logger.error(
+            "Error in process_twitter_digest",
+            extra={"timeframe": timeframe, "only_relevant": only_relevant},
+            exc_info=True
+        )
         return ("Error processing tweets", "Error processing tweets")
     finally:
         loop.close()

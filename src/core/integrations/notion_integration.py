@@ -11,11 +11,21 @@ logger = logging.getLogger(__name__)
 
 notion = None
 if NOTION_KEY and NOTION_KEY.strip():
-    notion = Client(auth=NOTION_KEY)
-    if not NOTION_DATABASE_ID:
-        logger.error("NOTION_DATABASE_ID is not set in config.py")
+    try:
+        notion = Client(auth=NOTION_KEY)
+        if not NOTION_DATABASE_ID:
+            logger.error(
+                "NOTION_DATABASE_ID is not set"
+            )
+    except Exception:
+        logger.error(
+            "Error initializing Notion client",
+            exc_info=True
+        )
 else:
-    logger.error("NOTION_KEY is not set in config.py")
+    logger.error(
+        "NOTION_KEY is not set"
+    )
 
 
 def split_text_into_chunks(text: str, max_length: int = 2000, suffix: str = ""):
@@ -213,8 +223,11 @@ def create_full_summary_page(summary_text: str, media_type: str = "Full Summary"
     # 1) Convert the raw text into Notion blocks (may be > 100 blocks).
     try:
         all_blocks = parse_markdown_to_blocks(summary_text)
-    except Exception as e:
-        logger.error(f"Error parsing Markdown for Notion blocks: {e}")
+    except Exception:
+        logger.error(
+            "Error parsing Markdown for Notion blocks",
+            exc_info=True
+        )
         # fallback: just chunk text into big paragraphs
         chunked = split_text_into_chunks(summary_text, max_length=2000)
         all_blocks = [
@@ -222,7 +235,7 @@ def create_full_summary_page(summary_text: str, media_type: str = "Full Summary"
                 "object": "block",
                 "type": "paragraph",
                 "paragraph": {
-                    "rich_text": [{"text": {"content": c}}]
+                    "rich_text": [{"type": "text", "text": {"content": c}, "annotations": {}}]
                 }
             }
             for c in chunked
@@ -247,9 +260,15 @@ def create_full_summary_page(summary_text: str, media_type: str = "Full Summary"
         response = notion.pages.create(**page_data)
         page_id = response["id"]
         page_url_for_return = response.get("url")
-        logger.info(f"Created Notion page {page_id} for full summary: {page_url_for_return}")
-    except Exception as e:
-        logger.error(f"Error creating base full summary page: {e}")
+        logger.info(
+            "Created Notion page for full summary",
+            extra={"page_id": page_id, "url": page_url_for_return}
+        )
+    except Exception:
+        logger.error(
+            "Error creating base full summary page",
+            exc_info=True
+        )
         return None
 
     # 3) Now append blocks in batches of up to 100
@@ -261,9 +280,16 @@ def create_full_summary_page(summary_text: str, media_type: str = "Full Summary"
                 block_id=page_id,
                 children=chunk_of_blocks
             )
-            logger.info(f"Appended {len(chunk_of_blocks)} blocks to page {page_id}.")
-        except Exception as e:
-            logger.error(f"Error appending blocks to page {page_id}: {e}")
+            logger.info(
+                "Appended blocks to Notion page",
+                extra={"page_id": page_id, "block_count": len(chunk_of_blocks)}
+            )
+        except Exception:
+            logger.error(
+                "Error appending blocks to page",
+                extra={"page_id": page_id},
+                exc_info=True
+            )
     
     return page_url_for_return
 
@@ -287,6 +313,7 @@ def split_rich_text_segment(seg, limit=2000):
             "annotations": annotations
         })
     return segments
+
 
 def ensure_all_segments_within_limit(segments, limit=2000):
     """
@@ -393,9 +420,15 @@ def send_tracked_content(
             parent={"database_id": NOTION_DATABASE_ID},
             properties=properties
         )
-        logger.info(f"Successfully created Notion page: {response.get('id')}")
-    except Exception as e:
-        logger.error(f"Error creating Notion page: {e}")
+        logger.info(
+            "Successfully created Notion page",
+            extra={"page_id": response.get("id")}
+        )
+    except Exception:
+        logger.error(
+            "Error creating Notion page",
+            exc_info=True
+        )
 
 
 def merge_surplus_segments(segments, keep_count=95):
@@ -433,7 +466,6 @@ def merge_surplus_segments(segments, keep_count=95):
     }
 
     return kept + [plain_seg]
-
 
 
 def clean_exec_summary_for_notion(exec_text: str) -> str:

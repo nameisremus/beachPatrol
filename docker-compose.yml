@@ -1,9 +1,10 @@
 volumes:
   redis_data: {}
+  grafana_data: {}
 
 services:
   redis:
-    image: redis:6.2-alpine
+    image: redis:8.0.1-alpine
     container_name: "redis_service"
     command: ["redis-server", "--port", "${REDIS_PORT}", "--appendonly", "yes"]
     ports:
@@ -17,6 +18,9 @@ services:
     build: .
     container_name: "celery_worker"
     working_dir: /app/src/tasks
+    volumes:
+      - ./cookies.txt:/app/cookies.txt
+      - ./proxies.csv:/app/proxies.csv
     depends_on:
       - redis
     env_file:
@@ -30,6 +34,8 @@ services:
     build: .
     container_name: "discord_bot"
     working_dir: /app/src/interface
+    volumes:
+      - ./proxies.csv:/app/proxies.csv
     depends_on:
       - redis
     env_file:
@@ -43,6 +49,8 @@ services:
     build: .
     container_name: "telegram_bot"
     working_dir: /app/src/interface
+    volumes:
+      - ./proxies.csv:/app/proxies.csv
     depends_on:
       - redis
     env_file:
@@ -51,3 +59,24 @@ services:
       - PYTHONPATH=/app/src
     command: >
       python telegram_bot.py
+
+  prometheus:
+    image: prom/prometheus:v3.3.1
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.6.1
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./src/grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"

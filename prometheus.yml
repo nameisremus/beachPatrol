@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: beachpatrol
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - discord_bot:9300
+          - telegram_bot:9300
+          - celery_worker:9300

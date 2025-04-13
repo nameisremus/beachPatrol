@@ -1,6 +1,9 @@
 import requests
 from bs4 import BeautifulSoup
+import logging
 from .IExtractor import IExtractor
+
+logger = logging.getLogger(__name__)
 
 class GitHubAdvisoryExtractor(IExtractor):
     def extract_details(self, url: str) -> dict:
@@ -11,19 +14,33 @@ class GitHubAdvisoryExtractor(IExtractor):
         try:
             response = requests.get(url)
             response.raise_for_status()
+            logger.info(
+                "Fetched GitHub advisory page",
+                extra={"url": url, "status_code": response.status_code}
+            )
         except Exception as e:
+            logger.error(
+                "Error fetching GitHub advisory page",
+                extra={"url": url},
+                exc_info=True
+            )
             raise Exception(f"Error fetching URL {url}: {e}")
-        
+
         html = response.text
         soup = BeautifulSoup(html, "html.parser")
-        
+
         # Look for the <main> element, which contains all the advisory content.
         main_content = soup.find("main")
         if main_content:
             advisory_text = main_content.get_text(separator="\n", strip=True)
         else:
             advisory_text = soup.get_text(separator="\n", strip=True)
-        
+
+        logger.info(
+            "Extracted GitHub advisory content",
+            extra={"url": url, "text_length": len(advisory_text)}
+        )
+
         return {
             'text': advisory_text,
             'summary': "",

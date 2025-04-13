@@ -87,8 +87,8 @@ After setting up your .env, review the JSON sample files to add or update Twitte
 Build and start all services:
 
 ```bash
-docker-compose build
-docker-compose up -d
+docker compose build
+docker compose up -d
 ```
 
 This launches:
@@ -100,7 +100,7 @@ This launches:
 Confirm that the bot connects to Discord/Telegram correctly and is not reporting errors.
 
 ```bash
-docker-compose logs -f
+docker compose logs -f
 ```
 
 If everything is set up correctly, you can start-up the conversation with the bot in Telegram or Discord.

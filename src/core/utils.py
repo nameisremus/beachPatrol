@@ -3,11 +3,13 @@ import json
 import io
 import redis
 import logging
+import re
 from config import REDIS_HOST, REDIS_PORT
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from bs4 import BeautifulSoup
 from core.integrations.notion_integration import send_tracked_content
 from core.media_configs import get_media_type_from_command
+from metrics.exporter import track_interaction
 
 import asyncio
 
@@ -95,6 +97,75 @@ def safe_telegram_html(text: str) -> str:
                 tag.unwrap()
     return soup.decode_contents()
 
+def html_aware_chunk_text(html: str, limit: int = 3846, suffix: str = "... (cont. on next page)") -> list[str]:
+    """
+    Splits an HTML string into chunks no longer than `limit` characters.
+    It makes sure that all allowed HTML tags (<a>, <b>, <i>) are balanced in each chunk.
+    
+    The algorithm:
+      - Walks the string character by character while tracking any encountered start/end tags.
+      - When the current chunk reaches the limit, it appends a suffix.
+      - Then it appends closing tags for any tags that were left open,
+        and (for the next chunk) it re-inserts those open tags at the beginning.
+    """
+    allowed_tags = {"a", "b", "i"}
+    chunks = []
+    pos = 0
+    open_tags = []  # will store the open tags (as tag names) that haven't yet been closed
+
+    while pos < len(html):
+        chunk = ""
+        # If there are leftover open tags from the previous chunk, re-open them in the new chunk.
+        if open_tags:
+            prefix = "".join(f"<{tag}>" for tag in open_tags)
+            chunk += prefix
+        current_len = len(chunk)
+        
+        # Walk through the HTML starting at pos
+        while pos < len(html) and current_len < limit:
+            if html[pos] == '<':
+                # Find the next '>' character
+                end_tag = html.find('>', pos)
+                if end_tag == -1:
+                    # Malformed HTML; break out
+                    break
+                tag_text = html[pos:end_tag+1]
+                chunk += tag_text
+                current_len += len(tag_text)
+
+                # Check if this tag is one of our allowed tags.
+                tag_match = re.match(r'<(/?)(\w+)', tag_text)
+                if tag_match:
+                    slash, tag = tag_match.group(1), tag_match.group(2).lower()
+                    if tag in allowed_tags:
+                        if slash == "":  # it's an opening tag
+                            open_tags.append(tag)
+                        else:  # it's a closing tag
+                            # Remove the most recent matching open tag.
+                            if tag in open_tags:
+                                # Remove the last occurrence of tag
+                                for i in range(len(open_tags)-1, -1, -1):
+                                    if open_tags[i] == tag:
+                                        del open_tags[i]
+                                        break
+                pos = end_tag + 1
+            else:
+                # Just a normal character
+                chunk += html[pos]
+                current_len += 1
+                pos += 1
+
+        # If we haven't reached the very end, add the suffix to indicate continuation.
+        if pos < len(html):
+            chunk += suffix
+
+        # Close any tags still open in this chunk.
+        if open_tags:
+            for tag in reversed(open_tags):
+                chunk += f"</{tag}>"
+        chunks.append(chunk)
+    return chunks
+
 
 class PersistentPaginatedEmbedView(discord.ui.View):
     """
@@ -160,13 +231,14 @@ class PersistentPaginatedEmbedView(discord.ui.View):
         if page_count > 1:
             embed.set_footer(text="Use the buttons below to navigate multiple pages.")
         return embed
-
+    
     @discord.ui.button(
         label="|<",
         style=discord.ButtonStyle.gray,
-        custom_id="placeholder_first_button"
+        custom_id="placeholder_first_page_bttn"
     )
-    async def first_page_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    @track_interaction("dc_first_page_bttn")
+    async def first_page_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.index = 0
         await self.save_state_and_update(interaction)
 
@@ -176,7 +248,8 @@ class PersistentPaginatedEmbedView(discord.ui.View):
         custom_id="placeholder_previous_button",
         disabled=True
     )
-    async def previous_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    @track_interaction("dc_prev_page_bttn")
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.index > 0:
             self.index -= 1
         await self.save_state_and_update(interaction)
@@ -186,7 +259,8 @@ class PersistentPaginatedEmbedView(discord.ui.View):
         style=discord.ButtonStyle.green,
         custom_id="placeholder_next_button"
     )
-    async def next_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    @track_interaction("dc_next_page_bttn")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.index < len(self.pages) - 1:
             self.index += 1
         await self.save_state_and_update(interaction)
@@ -196,7 +270,8 @@ class PersistentPaginatedEmbedView(discord.ui.View):
         style=discord.ButtonStyle.gray,
         custom_id="placeholder_last_button"
     )
-    async def last_page_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    @track_interaction("dc_last_page_bttn")
+    async def last_page_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.index = len(self.pages) - 1
         await self.save_state_and_update(interaction)
 
@@ -205,7 +280,8 @@ class PersistentPaginatedEmbedView(discord.ui.View):
         style=discord.ButtonStyle.blurple,
         custom_id="placeholder_download_txt_button"
     )
-    async def download_txt_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    @track_interaction("dc_download_bttn")
+    async def download_txt_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         """
         Collects all pages, combines them, and sends them as a .txt file attachment.
         This button is persistent, so it's always available for users to download the text.
@@ -219,13 +295,14 @@ class PersistentPaginatedEmbedView(discord.ui.View):
             file=discord_file,
             ephemeral=True
         )
-
+    
     @discord.ui.button(
     label="➤ Send to Notion",
     style=discord.ButtonStyle.secondary,
     custom_id="placeholder_send_notion"
     )
-    async def send_to_notion_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+    @track_interaction("dc_notion_bttn")
+    async def send_to_notion_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Immediately defer the interaction so we don't hit a timeout
         await interaction.response.defer()
 

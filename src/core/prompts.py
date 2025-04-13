@@ -380,7 +380,7 @@ class PromptManager:
         template = (
             "The following text is formatted for Discord. Convert it into Telegram HTML. "
             "Preserve all the content but adjust any formatting including, but not limited to bolding, italics, headlines, and hyperlinks added properly on keywords and not in square brackets"
-            "[] so they render properly in Telegram HTML, using the tags. "
+            "[] so they render properly in Telegram HTML, using the tags. Make sure absolutely all html tags have corresponding open and closing tags."
             "Replace words wrapped by stars * or **, or words that start with one or multiple hashtags # with the words in bold formatted for telegram."
             "Do not alter any content; only change the formatting to create lists, but keep numbered items if they already exist, and transform headlines into bold tags wrapped content."
             "Also, keep the newlines to a minimum, there shouldn't be any new lines between list items, only a maximum of one new line between numbered items, and 3 consecutive new lines or more should be merged into one.\n\n"

@@ -1,0 +1,122 @@
+{
+  "id": null,
+  "uid": "beachPatrol-overview",
+  "title": "BeachPatrol Overview",
+  "schemaVersion": 36,
+  "version": 2,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "timezone": "browser",
+  "panels": [
+    {
+      "type": "row",
+      "title": "Overall",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Slash-commands (all)",
+      "targets": [
+        { "expr": "sum(increase(beachPatrol_http_requests_total[24h]))" }
+      ],
+      "gridPos": { "x": 0, "y": 1, "w": 6, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "UI interactions (all)",
+      "targets": [
+        { "expr": "sum(increase(beachPatrol_interaction_total[24h]))" }
+      ],
+      "gridPos": { "x": 6, "y": 1, "w": 6, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Celery tasks",
+      "targets": [
+        { "expr": "sum(increase(beachPatrol_celery_task_total[24h]))" }
+      ],
+      "gridPos": { "x": 12, "y": 1, "w": 6, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Redis operations",
+      "targets": [
+        { "expr": "sum(increase(beachPatrol_redis_ops_total[24h]))" }
+      ],
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 4 }
+    },
+    {
+      "type": "row",
+      "title": "Discord",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Slash-commands · Discord",
+      "targets": [
+        {
+          "expr": "sum(increase(beachPatrol_http_requests_total{interface=\"discord\"}[24h]))"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 6, "w": 8, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "UI interactions · Discord",
+      "targets": [
+        {
+          "expr": "sum(increase(beachPatrol_interaction_total{interface=\"discord\"}[24h]))"
+        }
+      ],
+      "gridPos": { "x": 8, "y": 6, "w": 8, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Outgoing HTTP → Discord",
+      "targets": [
+        {
+          "expr": "sum(increase(beachPatrol_external_http_total{service=~\".*discord.*\"}[24h]))"
+        }
+      ],
+      "gridPos": { "x": 16, "y": 6, "w": 8, "h": 4 }
+    },
+    {
+      "type": "row",
+      "title": "Telegram",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 10 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Slash-commands · Telegram",
+      "targets": [
+        {
+          "expr": "sum(increase(beachPatrol_http_requests_total{interface=\"telegram\"}[24h]))"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 11, "w": 8, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "UI interactions · Telegram",
+      "targets": [
+        {
+          "expr": "sum(increase(beachPatrol_interaction_total{interface=\"telegram\"}[24h]))"
+        }
+      ],
+      "gridPos": { "x": 8, "y": 11, "w": 8, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Outgoing HTTP → Telegram",
+      "targets": [
+        {
+          "expr": "sum(increase(beachPatrol_external_http_total{service=~\".*telegram.*\"}[24h]))"
+        }
+      ],
+      "gridPos": { "x": 16, "y": 11, "w": 8, "h": 4 }
+    }
+  ]
+}

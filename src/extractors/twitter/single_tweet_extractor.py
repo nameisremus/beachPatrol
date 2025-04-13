@@ -6,11 +6,18 @@ from datetime import timezone
 from tweety import Twitter, TwitterAsync
 from tweety.types.twDataTypes import Tweet, SelfThread
 from tweety.types import Proxy, PROXY_TYPE_HTTP
+from .twitter_pool import twitter_pool, is_rate_limit_error
 from .digest_extractor import _expand_tweet_and_threads
-from config import TWITTER_USER, TWITTER_PASSWORD, PROXY_IP, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD
 from core.utils import safe_filename
 import yt_dlp
+from yt_dlp.utils import ExtractorError, DownloadError
 from extractors.youtube_extractor import chunk_file_if_needed, transcribe_segments
+
+import logging_config
+from logging_config import YTdlpLogger
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def parse_tweet_id_for_video_check(tweet_url: str) -> str:
@@ -38,29 +45,47 @@ def get_twitter_video_transcript(tweet_url: str) -> str:
 
     # Simulation (metadata only)
     ydl_opts_simulate = {
-        'skip_download': True,
-        'quiet': True,
-        'no_warnings': True,
-        'cookiefile': "../../cookies.txt",
+        "skip_download": True,
+        "quiet": True,
+        "noprogress": True,
+        "no_warnings": True,
+        "cookiefile": "../../cookies.txt",
+        "logger": YTdlpLogger(),
     }
+    supported_formats = [
+        "flac", "m4a", "mp3", "mp4", "mpeg", "mpga",
+        "oga", "ogg", "wav", "webm",
+    ]
     try:
         with yt_dlp.YoutubeDL(ydl_opts_simulate) as ydl:
             info = ydl.extract_info(tweet_url, download=False)
-        supported_formats = ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']
+        # If the container's own ext isn’t supported, look through formats:
         if info.get("ext", "") not in supported_formats:
-            formats_list = info.get("formats", [])
-            if not any(fmt.get("ext", "") in supported_formats for fmt in formats_list):
+            fmts = info.get("formats", [])
+            if not any(f.get("ext", "") in supported_formats for f in fmts):
                 return ""
-    except Exception:
+
+    except (ExtractorError, DownloadError) as e:
+        # The most common reason is simply "no media" – not an error.
+        logger.info("No downloadable media for %s (no video found)", tweet_url)
+        return ""
+    except Exception as e:
+        logger.error(
+            "Error simulating video format check",
+            extra={"tweet_url": tweet_url},
+            exc_info=True,
+        )
         return ""
 
     # Actual download and transcription if we have a supported format
     ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': outtmpl,
-        'quiet': True,
-        'no_warnings': True,
-        'cookiefile': "../../cookies.txt",
+        "format": "bestaudio/best",
+        "outtmpl": outtmpl,
+        "quiet": True,
+        "noprogress": True,
+        "no_warnings": True,
+        "cookiefile": "../../cookies.txt",
+        "logger": YTdlpLogger(),
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -70,8 +95,16 @@ def get_twitter_video_transcript(tweet_url: str) -> str:
             return ""
         chunks = chunk_file_if_needed(file_path)
         transcript = transcribe_segments(chunks)
-        return transcript
-    except Exception:
+        return transcript or ""
+    except (ExtractorError, DownloadError) as e:
+        logger.info("Download skipped for %s (no video found)", tweet_url)
+        return ""
+    except Exception as e:
+        logger.error(
+            "Error downloading or transcribing video",
+            extra={"tweet_url": tweet_url},
+            exc_info=True,
+        )
         return ""
 
 
@@ -82,14 +115,7 @@ def parse_tweet_id_from_url(tweet_url: str) -> str:
 
 
 async def fetch_single_tweet_and_thread(tweet_id: str) -> list[Tweet]:
-    proxy = Proxy(host=PROXY_IP, port=PROXY_PORT, proxy_type=PROXY_TYPE_HTTP, username=PROXY_USERNAME, password=PROXY_PASSWORD)
-    app = TwitterAsync("session", proxy=proxy)
-    if TWITTER_USER and TWITTER_PASSWORD:
-        print(f"[fetch_single_tweet_and_thread] Logging in as {TWITTER_USER}...")
-        await app.sign_in(TWITTER_USER, TWITTER_PASSWORD)
-        print(f"[fetch_single_tweet_and_thread] Logged in user: {app.me}")
-
-    detail_obj = await app.tweet_detail(tweet_id)
+    detail_obj = await twitter_pool.safe_call("tweet_detail", tweet_id)
     tweets_list = []
 
     if isinstance(detail_obj, SelfThread):
@@ -103,7 +129,8 @@ async def fetch_single_tweet_and_thread(tweet_id: str) -> list[Tweet]:
 
     expanded = []
     for tw in tweets_list:
-        expansion_res = await _expand_tweet_and_threads(app, tw)
+        pooled_app = await twitter_pool._client()
+        expansion_res = await _expand_tweet_and_threads(pooled_app, tw)
         for item in expansion_res["expanded_list"]:
             expanded.append(item["tweet_obj"])
 
@@ -121,15 +148,19 @@ async def fetch_tweet_comments(original_tweet: Tweet, pages=1) -> list[Tweet]:
         convo_threads = await original_tweet.get_comments(pages=pages, wait_time=2)
         if not convo_threads:
             return []
-        
+
         # Flatten them from ConversationThread -> list[Tweet]
         flattened_tweets = []
         for cthread in convo_threads:
             # cthread is a ConversationThread with cthread.tweets: list[Tweet]
-            flattened_tweets.extend(cthread.tweets)        
+            flattened_tweets.extend(cthread.tweets)
         return flattened_tweets
     except Exception as e:
-        print(f"[fetch_tweet_comments] Error fetching comments for tweet {original_tweet.id}: {e}")
+        logger.error(
+            "Error fetching tweet comments",
+            extra={"tweet_id": getattr(original_tweet, "id", None)},
+            exc_info=True
+        )
         return []
 
 
@@ -158,6 +189,11 @@ def extract_single_tweet_details(tweet_url: str, fetch_comments: bool = False) -
             root_tweet = expanded_tweets[0]
             comments_list = loop.run_until_complete(fetch_tweet_comments(root_tweet, pages=2))
     except Exception as e:
+        logger.error(
+            "Error fetching single tweet details",
+            extra={"tweet_id": tweet_id},
+            exc_info=True
+        )
         return {
             'text': f"Error fetching tweet ID={tweet_id}: {e}",
             'summary': "",
@@ -268,6 +304,11 @@ def extract_tweet_and_comments_text(tweet_url: str, fetch_comments: bool = False
             root_tweet = main_tweets[0]
             comments = loop.run_until_complete(fetch_tweet_comments(root_tweet, pages=1))
     except Exception as e:
+        logger.error(
+            "Error extracting tweet and comments text",
+            extra={"tweet_id": tweet_id},
+            exc_info=True
+        )
         return {
             'main_text': f"Error fetching tweet ID={tweet_id}: {e}",
             'comments_text': ""

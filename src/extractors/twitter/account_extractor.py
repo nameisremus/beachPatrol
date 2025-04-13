@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from tweety import Twitter, TwitterAsync
 from tweety.types.twDataTypes import Tweet, SelfThread
 from tweety.types import Proxy, PROXY_TYPE_HTTP
+from .twitter_pool import twitter_pool, is_rate_limit_error
 
 from .digest_extractor import (
     parse_timeframe,
@@ -21,44 +22,30 @@ from core.core import (
     do_custom_prompt,
     get_valid_model
 )
-from config import (
-    OPENAI_API_KEY,
-    TWITTER_USER,
-    TWITTER_PASSWORD,
-    PROXY_IP,
-    PROXY_PORT,
-    PROXY_USERNAME,
-    PROXY_PASSWORD
-)
+from config import OPENAI_API_KEY
+
+import logging
 
 openai.api_key = OPENAI_API_KEY
 
+logger = logging.getLogger(__name__)
 
-async def _fetch_pages_until_cutoff(app: Twitter, username: str, cutoff_dt: datetime) -> list[Tweet | SelfThread]:
+
+async def _fetch_pages_until_cutoff(app: Twitter, username: str, cutoff_dt: datetime):  # ← param kept
     """
-    Continually fetch more pages until we encounter a tweet older than cutoff_dt
-    or we get no more pages back.
+    Continually fetch pages until <cutoff_dt>.
+    Now uses twitter_pool for auto-rotation – the 'app' parameter is ignored.
     """
-    collected = []
-    page = 1
+    collected, page = [], 1
 
     while True:
         try:
-            batch = await app.get_tweets(
-                username,
-                pages=page,
-                replies=False,
-                wait_time=15
+            batch = await twitter_pool.safe_call(
+                "get_tweets", username, pages=page, replies=False, wait_time=15
             )
             if not batch:
-                break  # no more tweets
-
-            # Convert to a list if it's not already
-            if isinstance(batch, list):
-                new_tweets = batch
-            else:
-                new_tweets = batch.tweets
-
+                break
+            new_tweets = batch if isinstance(batch, list) else batch.tweets
             if not new_tweets:
                 break
 
@@ -72,14 +59,17 @@ async def _fetch_pages_until_cutoff(app: Twitter, username: str, cutoff_dt: date
             if older_found:
                 # Stop fetching further pages
                 break
-
             page += 1
-
-            # (Optional) you could stop if page > 10, etc.
-        except Exception as e:
-            print(f"[fetch_pages_until_cutoff] Error fetching page={page} for {username}: {e}")
+        except Exception as exc:
+            if is_rate_limit_error(exc):
+                await twitter_pool.rate_limit_hit()
+                continue # retrying the same page
+            logger.error(
+                "Error fetching page",
+                extra={"user": username, "page": page},
+                exc_info=True
+            )
             break
-
     return collected
 
 
@@ -137,8 +127,11 @@ async def _expand_and_filter_tweets(app: Twitter, all_raw, cutoff_dt: datetime) 
                         "screen_name": raw_tweet.author if hasattr(raw_tweet, "author") else "",
                         "is_retweet": item["is_retweet"]
                     })
-        except Exception as e:
-            print(f"[expand_and_filter_tweets] Error expanding tweet for single-user: {e}")
+        except Exception:
+            logger.error(
+                "Error expanding and filtering tweets",
+                exc_info=True
+            )
             continue
 
     # avoid negative
@@ -178,18 +171,20 @@ def process_twitter_account_summary(username: str, timeframe: str = "1d", model=
     from celery import current_task
 
     cutoff_dt = datetime.now(timezone.utc) - parse_timeframe(timeframe)
-    print(f"[process_twitter_account_summary] username={username}, timeframe={timeframe}, model={model}, prompt={prompt}, cutoff={cutoff_dt.isoformat()}")
+    logger.info(
+        "Starting process_twitter_account_summary",
+        extra={
+            "username": username,
+            "timeframe": timeframe,
+            "model": model,
+            "prompt": bool(prompt),
+            "cutoff": cutoff_dt.isoformat()
+        }
+    )
 
     async def run_async():
         # 1) Create Tweety client
-        proxy = Proxy(host=PROXY_IP, port=PROXY_PORT, proxy_type=PROXY_TYPE_HTTP, username=PROXY_USERNAME, password=PROXY_PASSWORD)
-
-        app = TwitterAsync("session", proxy=proxy)
-
-        if TWITTER_USER and TWITTER_PASSWORD:
-            print(f"[process_twitter_account_summary] Logging in as {TWITTER_USER}...")
-            await app.sign_in(TWITTER_USER, TWITTER_PASSWORD)
-            print(f"[process_twitter_account_summary] Logged in user: {app.me}")
+        app = await twitter_pool._client()
 
         # 2) Fetch tweets until cutoff
         all_raw_tweets = await _fetch_pages_until_cutoff(app, username, cutoff_dt)
@@ -326,8 +321,12 @@ def process_twitter_account_summary(username: str, timeframe: str = "1d", model=
     try:
         exec_sum, notes = loop.run_until_complete(run_async())
         return (exec_sum, notes)
-    except Exception as e:
-        print(f"[process_twitter_account_summary] Error: {e}")
+    except Exception:
+        logger.error(
+            "Error in process_twitter_account_summary",
+            extra={"username": username, "timeframe": timeframe},
+            exc_info=True
+        )
         return ("Error processing tweets", "Error processing tweets")
     finally:
         loop.close()

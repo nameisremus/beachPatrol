@@ -6,8 +6,14 @@ from datetime import datetime, timedelta, timezone
 from config import GOVERNANCE_FORUMS_MAPPING, OPENAI_MODEL
 from core.core import summarize_transcript, get_executive_summary, check_topic_relevance, categorize_governance_topic
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 def remove_html_tags(text):
     return re.sub('<[^<]+?>', '', text)
+
 
 def parse_timeframe(timeframe_str: str) -> timedelta:
     """
@@ -22,22 +28,34 @@ def parse_timeframe(timeframe_str: str) -> timedelta:
             pass
     return timedelta(days=1)
 
+
 def fetch_forum_topics(forum_url):
     """
     Retrieve /latest.json from Discourse forums to get recent topics.
     Returns a list of dicts or an empty list on errors.
     """
     try:
-        print(f"Fetching topics from {forum_url}...")
+        logger.info(
+            "Fetching topics",
+            extra={"forum_url": forum_url}
+        )
         resp = requests.get(f"{forum_url}/latest.json", timeout=10)
         resp.raise_for_status()
         data = resp.json()
         topics = data.get('topic_list', {}).get('topics', [])
-        print(f"Found {len(topics)} topics in {forum_url}")
+        logger.info(
+            "Fetched topics",
+            extra={"forum_url": forum_url, "topic_count": len(topics)}
+        )
         return topics
-    except Exception as e:
-        print(f"Error fetching from {forum_url}: {e}")
+    except Exception:
+        logger.error(
+            "Error fetching forum topics",
+            extra={"forum_url": forum_url},
+            exc_info=True
+        )
         return []
+
 
 def get_topic_details(forum_url, topic_id):
     """
@@ -45,7 +63,10 @@ def get_topic_details(forum_url, topic_id):
     strip HTML tags, and return plain text.
     """
     try:
-        print(f"Fetching details for topic {topic_id} from {forum_url}")
+        logger.info(
+            "Fetching topic details",
+            extra={"forum_url": forum_url, "topic_id": topic_id}
+        )
         resp = requests.get(f"{forum_url}/t/{topic_id}.json", timeout=10)
         resp.raise_for_status()
         data = resp.json()
@@ -53,9 +74,14 @@ def get_topic_details(forum_url, topic_id):
         if posts and posts[0].get('cooked'):
             cooked_html = posts[0]['cooked']
             return html.unescape(remove_html_tags(cooked_html))
-    except Exception as e:
-        print(f"Error fetching topic details from {forum_url}: {e}")
+    except Exception:
+        logger.error(
+            "Error fetching topic details",
+            extra={"forum_url": forum_url, "topic_id": topic_id},
+            exc_info=True
+        )
     return ""
+
 
 def process_governance_forum(
     timeframe: str = "1d",
@@ -70,20 +96,29 @@ def process_governance_forum(
        - If relevant, categorize the topic, then summarize
     3) Produce combined notes & executive summary grouped by category
     """
-    print("Starting governance forum processing...")
+    logger.info("Starting governance forum processing")
 
     # Convert timeframe (e.g. '7d') to a timedelta
     timeframe_delta = parse_timeframe(timeframe)
     cutoff = datetime.now(timezone.utc) - timeframe_delta
-    print(f"Timeframe={timeframe}, relevancyFilter={only_relevant}")
-    print(f"Using timeframe cutoff of {timeframe_delta} -> {cutoff.isoformat()}")
+    logger.info(
+        "Governance timeframe",
+        extra={
+            "timeframe": timeframe,
+            "only_relevant": only_relevant,
+            "cutoff": cutoff.isoformat()
+        }
+    )
 
     # We'll accumulate all relevant topics here
     relevant_topics = []
 
     # Iterate each forum in the mapping
     for forum_url, forum_name in GOVERNANCE_FORUMS_MAPPING.items():
-        print(f"Processing forum: {forum_url} ({forum_name})")
+        logger.info(
+            "Processing forum",
+            extra={"forum_url": forum_url, "forum_name": forum_name}
+        )
         topics = fetch_forum_topics(forum_url)
         processed_count = 0
         relevant_count = 0
@@ -112,7 +147,10 @@ def process_governance_forum(
                 continue
 
             processed_count += 1
-            print(f"Checking topic '{title}' in {forum_name}")
+            logger.info(
+                "Checking topic relevance",
+                extra={"forum_name": forum_name, "title": title}
+            )
 
             # Fetch full text for summarization + category
             full_content = get_topic_details(forum_url, topic_id)
@@ -121,7 +159,10 @@ def process_governance_forum(
             # If only_relevant is True, check if relevant to Lido
             if only_relevant:
                 if not check_topic_relevance(entire_text_for_relevance):
-                    print(f"Topic '{title}' in {forum_name} not relevant.")
+                    logger.info(
+                        "Topic not relevant",
+                        extra={"forum_name": forum_name, "title": title}
+                    )
                     continue
 
             # Now we categorize the topic
@@ -137,7 +178,10 @@ def process_governance_forum(
             exec_summary = re.sub(r'^(#{4,})(\s+)', r'###\2', exec_summary, flags=re.MULTILINE)
             exec_summary = re.sub(r'(?m)^###\s+(.*)', r'**\1**', exec_summary, flags=re.MULTILINE)
 
-            print(f"Topic '{title}' in {forum_name} is included and summarized.")
+            logger.info(
+                "Topic included and summarized",
+                extra={"forum_name": forum_name, "title": title}
+            )
             relevant_count += 1
 
             # Build direct link
@@ -159,7 +203,14 @@ def process_governance_forum(
                 'category': category
             })
 
-        print(f"Finished processing {forum_name}: Processed={processed_count}, Included={relevant_count}.")
+        logger.info(
+            "Finished processing forum",
+            extra={
+                "forum_name": forum_name,
+                "processed_count": processed_count,
+                "relevant_count": relevant_count
+            }
+        )
 
     # Group final results
     if not relevant_topics:
@@ -201,11 +252,16 @@ def process_governance_forum(
             combined_exec += f"### {cat}\n"
 
             for i, rt in enumerate(cat_items, start=1):
-                combined_notes += f"{i}. [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>)\n{rt['summary']}\n\n"
-                combined_exec += f"{i}. [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>) - {rt['exec_summary']}\n\n"
+                combined_notes += (
+                    f"{i}. [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>)\n"
+                    f"{rt['summary']}\n\n"
+                )
+                combined_exec += (
+                    f"{i}. [{rt['title']} - {rt['forum_name']}](<{rt['thread_link']}>) - "
+                    f"{rt['exec_summary']}\n\n"
+                )
 
-
-    print("Governance forum processing completed.")
+    logger.info("Governance forum processing completed")
     return {
         'exec_sum': combined_exec.strip(),
         'notes': combined_notes.strip()

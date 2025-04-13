@@ -1,9 +1,20 @@
 from .generate_summary_router import get_summary_router
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def save_summary(article_details: dict, save_path: str) -> bool:
     """
     Saves the summary details to a file, which the user can download
     """
+    logger.info(
+        "Saving summary to file",
+        extra={
+            "article_url": article_details.get("article_url"),
+            "save_path": save_path,
+        }
+    )
     try:
         with open(save_path, "w", encoding="utf-8") as f:
             f.write("Article URL: {}\n".format(article_details.get('article_url')))
@@ -13,11 +24,25 @@ def save_summary(article_details: dict, save_path: str) -> bool:
             f.write(article_details.get('summary', '') + "\n")
         return True
     except Exception as e:
-        print(f"Error saving summary: {e}")
+        logger.error(
+            "Error saving summary",
+            extra={
+                "article_url": article_details.get("article_url"),
+                "save_path": save_path,
+            },
+            exc_info=True
+        )
         return False
 
-def process_get_summary(url: str, save: bool = False, save_path: str = "summary.txt", interface: str = "discord",
-                        model: str = None, prompt: str = None) -> dict:
+
+def process_get_summary(
+    url: str,
+    save: bool = False,
+    save_path: str = "summary.txt",
+    interface: str = "discord",
+    model: str = None,
+    prompt: str = None
+) -> dict:
     """
     Handler for the get_summary command.
 
@@ -25,6 +50,18 @@ def process_get_summary(url: str, save: bool = False, save_path: str = "summary.
     and do a single call with the user prompt + the extracted article text.
     Otherwise, proceed with the normal summarize + get_executive_summary pipeline.
     """
+    logger.info(
+        "Processing get_summary request",
+        extra={
+            "url": url,
+            "save": save,
+            "save_path": save_path,
+            "interface": interface,
+            "model": model,
+            "prompt": prompt,
+        }
+    )
+
     from core.core import do_custom_prompt, summarize_transcript, get_executive_summary, get_valid_model
     # Extract raw article details first
     raw_result = get_summary_router(url)
