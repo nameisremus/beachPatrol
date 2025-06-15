@@ -20,11 +20,11 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    build-essential \
-    gfortran \
-    python3-dev \
-    libatlas-base-dev && \
+    ffmpeg=7:5.1.6-0+deb12u1 \
+    build-essential=12.9 \
+    gfortran=4:12.2.0-3 \
+    python3-dev=3.11.2-1+b1 \
+    libatlas-base-dev=3.10.3-13 && \
     rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml poetry.lock ./
@@ -45,9 +45,9 @@ RUN apt-get purge -y --auto-remove \
 FROM python:3.13.3-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    libatlas3-base \
-    libgfortran5 && \
+    ffmpeg=7:5.1.6-0+deb12u1 \
+    libatlas3-base=3.10.3-13 \
+    libgfortran5=12.2.0-14+deb12u1 && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy **all** the system-installed Python packages from builder

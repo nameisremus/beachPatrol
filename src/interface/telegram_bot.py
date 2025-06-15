@@ -9,7 +9,7 @@ from functools import partial
 import redis
 import asyncio
 
-from config import TG_BOT_TOKEN, OPENAI_MODELS_LIST, OPENAI_MODEL, BOT_PASSWORD, TG_ECOSYSTEM_UPDATES_GROUPID, REDIS_HOST, REDIS_PORT
+from config import TG_BOT_TOKEN, OPENAI_MODELS_LIST, OPENAI_MODEL, BOT_PASSWORD, TG_ECOSYSTEM_UPDATES_GROUPID, ENABLE_DAILY_TELEGRAM_TWITTER_DIGEST, REDIS_HOST, REDIS_PORT
 from core.utils import html_aware_chunk_text, safe_telegram_html, PersistentPaginatedMessage
 from core.integrations.notion_integration import send_tracked_content
 from core.core import format_for_telegram, get_content_tags
@@ -687,8 +687,8 @@ async def handle_plain_message(update: Update, context: ContextTypes.DEFAULT_TYP
 async def daily_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE):
     """
     Runs every minute, checking the current UTC time.
-    If it's 10:00 UTC, schedule the daily governance forum digest.
-    If it's 06:31 UTC, schedule the daily Twitter digest.
+    If it's 15:00 UTC, schedule the daily governance forum digest.
+    If it's 13:00 UTC, schedule the daily Twitter digest.
     """
     now_utc = datetime.now(timezone.utc)
 
@@ -708,18 +708,22 @@ async def daily_scheduled_tasks(context: ContextTypes.DEFAULT_TYPE):
         }
 
     # 2) Twitter digest at 13:00 UTC
-    if now_utc.hour == 13 and now_utc.minute == 00:
-        logger.info("[daily_scheduled_tasks] It's 13:00 UTC -> scheduling daily twitterdigest.")
-        job2 = celery_app.send_task(
-            "worker.scrape_twitter_digest",
-            kwargs={"timeframe": "1d", "only_relevant": True}
-        )
-        telegram_tasks[job2.id] = {
-            "job": job2,
-            "chat_id": int(TG_ECOSYSTEM_UPDATES_GROUPID),
-            "message_id": None,
-            "command_type": "twitter_digest"
-        }
+    if ENABLE_DAILY_TELEGRAM_TWITTER_DIGEST:
+        if now_utc.hour == 13 and now_utc.minute == 00:
+            logger.info("[daily_scheduled_tasks] It's 13:00 UTC -> scheduling daily twitterdigest.")
+            job2 = celery_app.send_task(
+                "worker.scrape_twitter_digest",
+                kwargs={"timeframe": "1d", "only_relevant": True}
+            )
+            telegram_tasks[job2.id] = {
+                "job": job2,
+                "chat_id": int(TG_ECOSYSTEM_UPDATES_GROUPID),
+                "message_id": None,
+                "command_type": "twitter_digest"
+            }
+    else:
+        logger.info("[daily_scheduled_tasks] Twitter digest is DISABLED by config; not scheduling.")
+
 
 def main():
     application = ApplicationBuilder().token(TG_BOT_TOKEN).build()
@@ -734,9 +738,11 @@ def main():
     application.add_handler(CommandHandler("generate_gov_digest", generate_gov_digest))
     application.add_handler(CommandHandler("generate_twitter_digest", generate_twitter_digest))
     application.add_handler(CommandHandler("generate_twitter_account_summary", generate_twitter_account_summary))
+    ''' # Disable auto-fetching links from group chats and summarizing
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_message)
     )
+    '''
     application.add_handler(CallbackQueryHandler(persistent_callback_handler, pattern="^persistent\\|"))
 
     application.job_queue.run_repeating(check_pending_tasks, interval=5, first=5)
